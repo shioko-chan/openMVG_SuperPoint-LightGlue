@@ -152,6 +152,8 @@ int main(int argc, char **argv)
   else if (cmd.used('G'))
     i_mode = PAIR_MODE_NEIGHBORHOOD;
 
+  i_mode = PAIR_MODE_NEIGHBORHOOD;
+  
   // Input SfM_Data scene
   SfM_Data sfm_data;
   if (!Load(sfm_data, s_SfM_Data_filename, ESfM_Data(VIEWS|INTRINSICS)))
