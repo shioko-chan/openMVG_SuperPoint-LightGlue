@@ -20,7 +20,7 @@ if (OpenMVG_BUILD_GUI_SOFTWARES)
 
     target_link_libraries( openMVG_sample_describe_and_match_GUI Qt5::Widgets openMVG_features openMVG_image openMVG_matching vlsift )
 
-    set_target_properties( openMVG_sample_describe_and_match_GUI PROPERTIES CXX_STANDARD 11)
+    set_target_properties( openMVG_sample_describe_and_match_GUI PROPERTIES CXX_STANDARD 14)
 
     set_property(TARGET openMVG_sample_describe_and_match_GUI PROPERTY FOLDER OpenMVG/Samples)
 

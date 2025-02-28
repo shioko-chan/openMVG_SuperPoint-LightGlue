@@ -2,6 +2,7 @@
 ###
 # Intrinsic image analysis and SfM_Data container initialization
 ###
+
 add_executable(openMVG_main_SfMInit_ImageListing main_SfMInit_ImageListing.cpp)
 target_link_libraries(openMVG_main_SfMInit_ImageListing
   PRIVATE
@@ -34,15 +35,19 @@ install(TARGETS openMVG_main_ConvertList DESTINATION bin/)
 # - openMVG_main_ComputeFeatures: features and descriptors
 # - openMVG_main_ComputeMatches: putative matches + geometric filtered matches
 ###
+find_package(OpenCV REQUIRED)
+include_directories(${OpenCV_INCLUDE_DIRS})
 
 add_executable(openMVG_main_ComputeFeatures main_ComputeFeatures.cpp)
 target_link_libraries(openMVG_main_ComputeFeatures
   PRIVATE
+    /usr/local/lib/libonnxruntime.so
     openMVG_system
     openMVG_image
     openMVG_features
     openMVG_multiview
     openMVG_sfm
+    ${OpenCV_LIBS}
     ${STLPLUS_LIBRARY}
     vlsift
 )
