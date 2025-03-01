@@ -37,19 +37,33 @@
 #include <omp.h>
 #endif
 
-#include <opencv4/opencv2/core.hpp>
-#include <opencv4/opencv2/core/eigen.hpp>
+#include <opencv2/opencv.hpp>
+#include <opencv2/core/eigen.hpp>
 
 class SuperPoint_Image_describer : public openMVG::features::Image_describer
 {
+private:
+  std::unique_ptr<Ort::Session> session_;
+
 public:
   SuperPoint_Image_describer(const std::string &model_path)
   {
+    std::cout << "SuperPoint_Image_describer" << std::endl;
+
     Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "SuperPoint");
+
     Ort::SessionOptions session_options;
+
     session_options.SetIntraOpNumThreads(1);
     session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
-    session_ = std::make_unique<Ort::Session>(env, model_path.c_str(), session_options);
+
+    OrtCUDAProviderOptions cuda_options;
+    cuda_options.device_id = 0;
+    cuda_options.cudnn_conv_algo_search = OrtCudnnConvAlgoSearch::OrtCudnnConvAlgoSearchHeuristic;
+
+    session_options.AppendExecutionProvider_CUDA(cuda_options);
+
+    this->session_ = std::make_unique<Ort::Session>(env, model_path.c_str(), session_options);
   }
 
   bool Set_configuration_preset(openMVG::features::EDESCRIBER_PRESET preset) override
@@ -61,61 +75,95 @@ public:
       const openMVG::image::Image<unsigned char> &image,
       const openMVG::image::Image<unsigned char> *mask = nullptr) override
   {
-    cv::Mat cvImg;
-    cv::eigen2cv(image, cvImg);
-
-    cv::Mat floatImage;
-    cvImg.convertTo(floatImage, CV_32FC1, 1.0 / 255.0);
-
-    std::vector<int64_t> inputShape{1, 1, floatImage.rows, floatImage.cols};
-    Ort::MemoryInfo memoryInfo = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU);
-    Ort::Value inputTensor = Ort::Value::CreateTensor<float>(
-        memoryInfo,
-        reinterpret_cast<float *>(floatImage.data),
-        floatImage.total(),
-        inputShape.data(),
-        inputShape.size());
-
-    const char *input_names[] = {"image"};
-    const char *output_names[] = {"keypoints", "scores", "descriptors"};
-    auto outputs = session_->Run(Ort::RunOptions{nullptr}, input_names, &inputTensor, 1, output_names, 3);
-
-    const auto &kp_output = outputs[0];    // keypoints [1, N, 2]
-    const auto &score_output = outputs[1]; // scores [1, N]
-    const auto &desc_output = outputs[2];  // descriptors [1, 256, N]
-
-    const float *kp_data = kp_output.GetTensorData<float>();
-    const float *score_data = score_output.GetTensorData<float>();
-    const float *desc_data = desc_output.GetTensorData<float>();
-
-    const int num_keypoints = kp_output.GetTensorTypeAndShapeInfo().GetShape()[1];
-
-    auto regions = std::make_unique<openMVG::features::SuperPoint_Regions>();
-    regions->Features().reserve(num_keypoints);
-    regions->Descriptors().reserve(num_keypoints);
-
-    for (int i = 0; i < num_keypoints; ++i)
+    try
     {
-      const float x = kp_data[i * 2 + 0];
-      const float y = kp_data[i * 2 + 1];
-      regions->Features().emplace_back(x, y, 0.0f, 0.0f);
+      OPENMVG_LOG_INFO << "Starting Describe function";
 
-      openMVG::features::Scalar_Regions<openMVG::features::SIOPointFeature, float, 256>::DescriptorT descriptor;
-      const float *desc_start = desc_data + i * 256;
-      std::copy(desc_start, desc_start + 256, descriptor.data());
-      regions->Descriptors().push_back(descriptor);
+      cv::Mat img;
+      cv::eigen2cv(image.GetMat(), img);
+
+      cv::Mat floatImage;
+      img.convertTo(floatImage, CV_32FC1, 1.0 / 255.0);
+
+      std::vector<int64_t> inputShape{1, 1, floatImage.rows, floatImage.cols};
+      Ort::MemoryInfo memoryInfo("Cuda", OrtArenaAllocator, 0, OrtMemTypeDefault);
+
+      Ort::Value inputTensor = Ort::Value::CreateTensor<float>(
+          memoryInfo,
+          reinterpret_cast<float *>(floatImage.data),
+          floatImage.total(),
+          inputShape.data(),
+          inputShape.size());
+
+      OPENMVG_LOG_INFO << "Input tensor prepared with shape: [" << floatImage.rows << ", " << floatImage.cols << "]";
+
+      const char *input_names[] = {"image"};
+      const char *output_names[] = {"keypoints", "scores", "descriptors"};
+      auto outputs = this->session_->Run(Ort::RunOptions{nullptr}, input_names, &inputTensor, 1, output_names, 3);
+
+      OPENMVG_LOG_INFO << "Inference completed successfully";
+
+      const auto &kp_output = outputs[0];    // keypoints [1, N, 2]
+      const auto &score_output = outputs[1]; // scores [1, N]
+      const auto &desc_output = outputs[2];  // descriptors [1, 256, N]
+
+      const float *kp_data = kp_output.GetTensorData<float>();
+      const float *score_data = score_output.GetTensorData<float>();
+      const float *desc_data = desc_output.GetTensorData<float>();
+
+      const int num_keypoints = kp_output.GetTensorTypeAndShapeInfo().GetShape()[1];
+
+      if (num_keypoints == 0)
+      {
+        OPENMVG_LOG_WARNING << "No keypoints detected!";
+        return std::make_unique<openMVG::features::SuperPoint_Regions>();
+      }
+
+      auto regions = std::make_unique<openMVG::features::SuperPoint_Regions>();
+      regions->Features().reserve(num_keypoints);
+      regions->Descriptors().reserve(num_keypoints);
+
+      OPENMVG_LOG_INFO << "Number of keypoints detected: " << num_keypoints;
+
+      for (int i = 0; i < num_keypoints; ++i)
+      {
+        const float x = kp_data[i * 2 + 0];
+        const float y = kp_data[i * 2 + 1];
+        regions->Features().emplace_back(x, y, 0.0f, 0.0f);
+
+        openMVG::features::Scalar_Regions<openMVG::features::SIOPointFeature, float, 256>::DescriptorT descriptor;
+        const float *desc_start = desc_data + i * 256;
+        std::copy(desc_start, desc_start + 256, descriptor.data());
+        regions->Descriptors().push_back(descriptor);
+      }
+
+      OPENMVG_LOG_INFO << "Feature extraction completed";
+      return regions;
+    }
+    catch (const Ort::Exception &e)
+    {
+      OPENMVG_LOG_ERROR << "ONNX Runtime error: " << e.what();
+    }
+    catch (const cv::Exception &e)
+    {
+      OPENMVG_LOG_ERROR << "OpenCV error: " << e.what();
+    }
+    catch (const std::exception &e)
+    {
+      OPENMVG_LOG_ERROR << "Standard exception: " << e.what();
+    }
+    catch (...)
+    {
+      OPENMVG_LOG_ERROR << "Unknown error occurred in Describe";
     }
 
-    return regions;
+    return std::make_unique<openMVG::features::SuperPoint_Regions>();
   }
 
   std::unique_ptr<openMVG::features::Regions> Allocate() const override
   {
     return std::unique_ptr<openMVG::features::SuperPoint_Regions>(new openMVG::features::SuperPoint_Regions);
   }
-
-private:
-  std::unique_ptr<Ort::Session> session_;
 };
 
 openMVG::features::EDESCRIBER_PRESET stringToEnum(const std::string &sPreset)
@@ -197,6 +245,8 @@ int main(int argc, char **argv)
     return EXIT_FAILURE;
   }
 
+  sImage_Describer_Method = "SUPERPOINT";
+
   OPENMVG_LOG_INFO
       << " You called : " << "\n"
       << argv[0] << "\n"
@@ -247,29 +297,27 @@ int main(int argc, char **argv)
 
   const std::string sImage_describer = stlplus::create_filespec(sOutDir, "image_describer", "json");
 
-  sImage_Describer_Method = "SUPERPOINT";
+  // if (!bForce && stlplus::is_file(sImage_describer))
+  // {
 
-  if (!bForce && stlplus::is_file(sImage_describer))
-  {
+  //   // Dynamically load the image_describer from the file (will restore old used settings)
+  //   std::ifstream stream(sImage_describer.c_str());
+  //   if (!stream)
+  //     return EXIT_FAILURE;
 
-    // Dynamically load the image_describer from the file (will restore old used settings)
-    std::ifstream stream(sImage_describer.c_str());
-    if (!stream)
-      return EXIT_FAILURE;
-
-    try
-    {
-      cereal::JSONInputArchive archive(stream);
-      archive(cereal::make_nvp("image_describer", image_describer));
-    }
-    catch (const cereal::Exception &e)
-    {
-      OPENMVG_LOG_ERROR << e.what() << '\n'
-                        << "Cannot dynamically allocate the Image_describer interface.";
-      return EXIT_FAILURE;
-    }
-  }
-  else
+  //   try
+  //   {
+  //     cereal::JSONInputArchive archive(stream);
+  //     archive(cereal::make_nvp("image_describer", image_describer));
+  //   }
+  //   catch (const cereal::Exception &e)
+  //   {
+  //     OPENMVG_LOG_ERROR << e.what() << '\n'
+  //                       << "Cannot dynamically allocate the Image_describer interface.";
+  //     return EXIT_FAILURE;
+  //   }
+  // }
+  // else
   {
     // Create the desired Image_describer method.
     // Don't use a factory, perform direct allocation
@@ -312,16 +360,16 @@ int main(int argc, char **argv)
 
     // Export the used Image_describer and region type for:
     // - dynamic future regions computation and/or loading
-    {
-      std::ofstream stream(sImage_describer.c_str());
-      if (!stream)
-        return EXIT_FAILURE;
+    // {
+    //   std::ofstream stream(sImage_describer.c_str());
+    //   if (!stream)
+    //     return EXIT_FAILURE;
 
-      cereal::JSONOutputArchive archive(stream);
-      archive(cereal::make_nvp("image_describer", image_describer));
-      auto regionsType = image_describer->Allocate();
-      archive(cereal::make_nvp("regions_type", regionsType));
-    }
+    //   cereal::JSONOutputArchive archive(stream);
+    //   archive(cereal::make_nvp("image_describer", image_describer));
+    //   auto regionsType = image_describer->Allocate();
+    //   archive(cereal::make_nvp("regions_type", regionsType));
+    // }
   }
 
   // Feature extraction routines
