@@ -36,35 +36,73 @@
 #include <omp.h>
 #endif
 
-// #include <onnxruntime_cxx_api.h>
-
+#include <NvInferRuntime.h>
+#include <cuda_runtime_api.h>
 #include <opencv2/opencv.hpp>
 #include <opencv2/core/eigen.hpp>
 
 class SuperPoint_Image_describer : public openMVG::features::Image_describer
 {
 private:
-  // std::unique_ptr<Ort::Session> session_;
+  class Logger : public nvinfer1::ILogger
+  {
+  private:
+    nvinfer1::Severity reportableSeverity;
+
+  public:
+    explicit Logger(nvinfer1::Severity severity = nvinfer1::Severity::kINFO) : reportableSeverity(severity) {}
+
+    void log(nvinfer1::Severity severity, const char *msg) noexcept override
+    {
+      if (severity > reportableSeverity)
+      {
+        return;
+      }
+      switch (severity)
+      {
+      case nvinfer1::Severity::kINTERNAL_ERROR:
+        OPENMVG_LOG_ERROR << "[TensorRT] INTERNAL_ERROR: " << msg;
+        break;
+      case nvinfer1::Severity::kERROR:
+        OPENMVG_LOG_ERROR << "[TensorRT] ERROR: " << msg;
+        break;
+      case nvinfer1::Severity::kWARNING:
+        OPENMVG_LOG_WARNING << "[TensorRT] WARNING: " << msg;
+        break;
+      case nvinfer1::Severity::kINFO:
+        OPENMVG_LOG_INFO << "[TensorRT] INFO: " << msg;
+        break;
+      case nvinfer1::Severity::kVERBOSE:
+        OPENMVG_LOG_INFO << "[TensorRT] VERBOSE: " << msg;
+        break;
+      case nvinfer1::Severity::kDEBUG:
+        OPENMVG_LOG_INFO << "[TensorRT] DEBUG: " << msg;
+        break;
+      }
+    }
+  };
+
+  Logger logger;
+  std::unique_ptr<nvinfer1::IRuntime> runtime;
+  std::unique_ptr<nvinfer1::ICudaEngine> engine;
+  std::unique_ptr<nvinfer1::IExecutionContext> context;
 
 public:
-  SuperPoint_Image_describer(const std::string &model_path)
+  SuperPoint_Image_describer(const std::string &model_path) : Image_describer()
   {
     std::cout << "SuperPoint_Image_describer" << std::endl;
+    std::ifstream file(model_path, std::ios::binary);
+    if (!file.is_open())
+    {
+      OPENMVG_LOG_ERROR << "Failed to open model file: " << model_path;
+      return;
+    }
+    std::vector<char> engine_data(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+    file.close();
 
-    // Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "SuperPoint");
-
-    // Ort::SessionOptions session_options;
-
-    // session_options.SetIntraOpNumThreads(1);
-    // session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
-
-    // OrtCUDAProviderOptions cuda_options;
-    // cuda_options.device_id = 0;
-    // cuda_options.cudnn_conv_algo_search = OrtCudnnConvAlgoSearch::OrtCudnnConvAlgoSearchHeuristic;
-
-    // session_options.AppendExecutionProvider_CUDA(cuda_options);
-
-    // this->session_ = std::make_unique<Ort::Session>(env, model_path.c_str(), session_options);
+    this->runtime = std::make_unique(nvinfer1::createInferRuntime(this->logger));
+    this->engine = std::make_uniquea(runtime->deserializeCudaEngine(engine_data.data(), engine_data.size(), nullptr));
+    this->context = std::make_unique(engine->createExecutionContext());
   }
 
   bool Set_configuration_preset(openMVG::features::EDESCRIBER_PRESET preset) override
@@ -72,93 +110,121 @@ public:
     return true;
   }
 
+  inline size_t calculate_size(nvinfer1::Dims &dims)
+  {
+    size_t output_size = 1;
+    for (int j = 0; j < dims.nbDims; ++j)
+    {
+      output_size *= dims.d[j];
+    }
+    return output_size;
+  }
+
+  void print_dims(nvinfer1::Dims &dims, const char *name)
+  {
+    char *buffer = new char[256];
+    std::sprintf(buffer, "%s has shape: [", name);
+    for (int j = 0; j < dims.nbDims; ++j)
+    {
+      std::sprintf(buffer, "%s%d, ", buffer, dims.d[j]);
+    }
+    std::sprintf(buffer, "%s]", buffer);
+    OPENMVG_LOG_INFO << buffer;
+  }
+
   std::unique_ptr<openMVG::features::Regions> Describe(
       const openMVG::image::Image<unsigned char> &image,
       const openMVG::image::Image<unsigned char> *mask = nullptr) override
   {
-    // try
-    // {
-    //   OPENMVG_LOG_INFO << "Starting Describe function";
+    cv::Mat img;
+    cv::eigen2cv(image.GetMat(), img);
 
-    //   cv::Mat img;
-    //   cv::eigen2cv(image.GetMat(), img);
+    cv::Mat img_input;
+    img.convertTo(img_input, CV_32FC1, 1.0 / 255.0);
 
-    //   cv::Mat floatImage;
-    //   img.convertTo(floatImage, CV_32FC1, 1.0 / 255.0);
+    const int input_size = img_input.total() * sizeof(float);
 
-    //   std::vector<int64_t> inputShape{1, 1, floatImage.rows, floatImage.cols};
-    //   Ort::MemoryInfo memoryInfo("Cuda", OrtArenaAllocator, 0, OrtMemTypeDefault);
+    float *input;
+    cudaMalloc(&input, input_size);
+    cudaMemcpy(input, img_input.ptr<float>(), input_size, cudaMemcpyHostToDevice);
 
-    //   Ort::Value inputTensor = Ort::Value::CreateTensor<float>(
-    //       memoryInfo,
-    //       reinterpret_cast<float *>(floatImage.data),
-    //       floatImage.total(),
-    //       inputShape.data(),
-    //       inputShape.size());
+    OPENMVG_LOG_INFO << "Input tensor prepared with shape: [" << img_input.rows << ", " << img_input.cols << "]";
 
-    //   OPENMVG_LOG_INFO << "Input tensor prepared with shape: [" << floatImage.rows << ", " << floatImage.cols << "]";
+    const char *input_names[] = {"image"};
+    const int input_index = this->engine->getBindingIndex(input_names[0]);
+    this->context->setBindingDimensions(input_index, nvinfer1::Dims4(1, 1, img_input.rows, img_input.cols));
+    this->context->setTensorAddress(input_names[0], input);
 
-    //   const char *input_names[] = {"image"};
-    //   const char *output_names[] = {"keypoints", "scores", "descriptors"};
-    //   auto outputs = this->session_->Run(Ort::RunOptions{nullptr}, input_names, &inputTensor, 1, output_names, 3);
+    const char *output_names[] = {"keypoints", "scores", "descriptors"};
+    std::vector<nvinfer1::Dims> output_dims(3);
+    std::vector<void *> outputs(3);
+    for (int i = 0; i < 3; ++i)
+    {
+      const int output_index = this->engine->getBindingIndex(output_names[i]);
+      output_dims[i] = this->context->getBindingDimensions(output_index);
+      print_dims(output_dims[i], output_names[i]);
+      cudaMalloc(&outputs[i], this->calculate_size(output_dims[i]) * sizeof(float));
+      this->context->setTensorAddress(output_names[i], outputs[i]);
+    }
 
-    //   OPENMVG_LOG_INFO << "Inference completed successfully";
+    cudaStream_t stream;
+    cudaStreamCreate(&stream);
+    this->context->enqueueV3(stream);
 
-    //   const auto &kp_output = outputs[0];    // keypoints [1, N, 2]
-    //   const auto &score_output = outputs[1]; // scores [1, N]
-    //   const auto &desc_output = outputs[2];  // descriptors [1, 256, N]
+    std::vector<std::vector<float>> host_outputs(3);
+    for (int i = 0; i < 3; ++i)
+    {
+      const int output_index = this->engine->getBindingIndex(output_names[i]);
+      print_dims(output_dims[i], output_names[i]);
+      const int output_size = this->calculate_size(this->context->getBindingDimensions(output_index));
+      host_outputs[i].resize(output_size);
+      cudaMemcpy(host_outputs[i].data(), outputs[i], output_size * sizeof(float), cudaMemcpyDeviceToHost);
+    }
 
-    //   const float *kp_data = kp_output.GetTensorData<float>();
-    //   const float *score_data = score_output.GetTensorData<float>();
-    //   const float *desc_data = desc_output.GetTensorData<float>();
+    cudaStreamSynchoronize(stream);
 
-    //   const int num_keypoints = kp_output.GetTensorTypeAndShapeInfo().GetShape()[1];
+    OPENMVG_LOG_INFO << "Inference completed successfully";
 
-    //   if (num_keypoints == 0)
-    //   {
-    //     OPENMVG_LOG_WARNING << "No keypoints detected!";
-    //     return std::make_unique<openMVG::features::SuperPoint_Regions>();
-    //   }
+    const std::Vector<float> &kp = host_outputs[0];    // keypoints [1, N, 2]
+    const std::Vector<float> &score = host_outputs[1]; // scores [1, N]
+    const std::Vector<float> &desc = host_outputs[2];  // descriptors [1, 256, N]
 
-    //   auto regions = std::make_unique<openMVG::features::SuperPoint_Regions>();
-    //   regions->Features().reserve(num_keypoints);
-    //   regions->Descriptors().reserve(num_keypoints);
+    const int num_keypoints = output_dims[0].d[1];
 
-    //   OPENMVG_LOG_INFO << "Number of keypoints detected: " << num_keypoints;
+    if (num_keypoints == 0)
+    {
+      OPENMVG_LOG_WARNING << "No keypoints detected!";
+      return std::make_unique<openMVG::features::SuperPoint_Regions>();
+    }
 
-    //   for (int i = 0; i < num_keypoints; ++i)
-    //   {
-    //     const float x = kp_data[i * 2 + 0];
-    //     const float y = kp_data[i * 2 + 1];
-    //     regions->Features().emplace_back(x, y, 0.0f, 0.0f);
+    auto regions = std::make_unique<openMVG::features::SuperPoint_Regions>();
+    regions->Features().reserve(num_keypoints);
+    regions->Descriptors().reserve(num_keypoints);
 
-    //     openMVG::features::Scalar_Regions<openMVG::features::SIOPointFeature, float, 256>::DescriptorT descriptor;
-    //     const float *desc_start = desc_data + i * 256;
-    //     std::copy(desc_start, desc_start + 256, descriptor.data());
-    //     regions->Descriptors().push_back(descriptor);
-    //   }
+    OPENMVG_LOG_INFO << "Number of keypoints detected: " << num_keypoints;
 
-    //   OPENMVG_LOG_INFO << "Feature extraction completed";
-    //   return regions;
-    // }
-    // catch (const Ort::Exception &e)
-    // {
-    //   OPENMVG_LOG_ERROR << "ONNX Runtime error: " << e.what();
-    // }
-    // catch (const cv::Exception &e)
-    // {
-    //   OPENMVG_LOG_ERROR << "OpenCV error: " << e.what();
-    // }
-    // catch (const std::exception &e)
-    // {
-    //   OPENMVG_LOG_ERROR << "Standard exception: " << e.what();
-    // }
-    // catch (...)
-    // {
-    //   OPENMVG_LOG_ERROR << "Unknown error occurred in Describe";
-    // }
+    for (int i = 0; i < num_keypoints; ++i)
+    {
+      const float x = kp[i * 2 + 0];
+      const float y = kp[i * 2 + 1];
+      regions->Features().emplace_back(x, y);
 
-    return std::make_unique<openMVG::features::SuperPoint_Regions>();
+      openMVG::features::SuperPoint_Regions::DescriptorT descriptor;
+      const float *desc_start = desc + i * 256;
+      std::copy(desc_start, desc_start + 256, descriptor.data());
+      regions->Descriptors().push_back(descriptor);
+    }
+
+    cudaStreamDestroy(stream);
+    cudaFree(input);
+    for (int i = 0; i < 3; ++i)
+    {
+      cudaFree(outputs[i]);
+    }
+
+    OPENMVG_LOG_INFO << "Feature extraction completed";
+
+    return regions;
   }
 
   std::unique_ptr<openMVG::features::Regions>

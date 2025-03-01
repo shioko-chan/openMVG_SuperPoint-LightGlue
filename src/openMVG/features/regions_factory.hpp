@@ -28,7 +28,7 @@ namespace openMVG
         using AKAZE_Binary_Regions = Binary_Regions<SIOPointFeature, 64>;
 
         /// Define the SuperPoint Keypoint
-        using SuperPoint_Regions = Scalar_Regions<SIOPointFeature, float, 256>;
+        using SuperPoint_Regions = Scalar_Regions<PointFeature, float, 256>;
 
     } // namespace features
 } // namespace openMVG

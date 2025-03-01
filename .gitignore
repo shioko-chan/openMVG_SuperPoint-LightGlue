@@ -17,3 +17,5 @@ build
 .pixi
 # Vscode
 .vscode
+
+openMVG_Build/

@@ -38,15 +38,23 @@ install(TARGETS openMVG_main_ConvertList DESTINATION bin/)
 find_package(OpenCV REQUIRED)
 include_directories(${OpenCV_INCLUDE_DIRS})
 
+find_package(CUDA REQUIRED)
+include_directories(${CUDA_INCLUDE_DIRS})
+
+include_directories(/usr/include/x86_64-linux-gnu/)
+link_directories(/usr/lib/x86_64-linux-gnu/)
+
 add_executable(openMVG_main_ComputeFeatures main_ComputeFeatures.cpp)
 target_link_libraries(openMVG_main_ComputeFeatures
   PRIVATE
-    # /usr/local/lib/libonnxruntime.so
     openMVG_system
     openMVG_image
     openMVG_features
     openMVG_multiview
     openMVG_sfm
+    ${CUDA_LIBRARIES}
+    nvinfer
+    cudart
     ${OpenCV_LIBS}
     ${STLPLUS_LIBRARY}
     vlsift

@@ -14,7 +14,6 @@
 #include "openMVG/sfm/sfm.hpp"
 #include "openMVG/system/timer.hpp"
 
-
 #include "third_party/cmdLine/cmdLine.h"
 #include "third_party/stlplus3/filesystemSimplified/file_system.hpp"
 
@@ -36,15 +35,15 @@ using namespace openMVG::sfm;
 enum eGeometricModel
 {
   FUNDAMENTAL_MATRIX = 0,
-  ESSENTIAL_MATRIX   = 1,
-  HOMOGRAPHY_MATRIX  = 2
+  ESSENTIAL_MATRIX = 1,
+  HOMOGRAPHY_MATRIX = 2
 };
 
 enum ePairMode
 {
   PAIR_EXHAUSTIVE = 0,
   PAIR_CONTIGUOUS = 1,
-  PAIR_FROM_FILE  = 2
+  PAIR_FROM_FILE = 2
 };
 
 ///
@@ -63,7 +62,8 @@ public:
 
   cv::Ptr<cv::Feature2D> extractor;
 
-  AKAZE_OCV_Image_describer():Image_describer(){
+  AKAZE_OCV_Image_describer() : Image_describer()
+  {
     extractor = cv::AKAZE::create(cv::AKAZE::DESCRIPTOR_KAZE);
   }
 
@@ -79,9 +79,8 @@ public:
   @return regions The detected regions and attributes (the caller must delete the allocated data)
   */
   std::unique_ptr<Regions> Describe(
-      const Image<unsigned char>& image,
-      const Image<unsigned char> * mask = nullptr
-  ) override
+      const Image<unsigned char> &image,
+      const Image<unsigned char> *mask = nullptr) override
   {
     return Describe_AKAZE_OCV(image, mask);
   }
@@ -94,9 +93,8 @@ public:
   @return regions The detected regions and attributes (the caller must delete the allocated data)
   */
   std::unique_ptr<Regions_type> Describe_AKAZE_OCV(
-    const Image<unsigned char>& image,
-    const Image<unsigned char> * mask = nullptr
-  )
+      const Image<unsigned char> &image,
+      const Image<unsigned char> *mask = nullptr)
   {
     auto regions = std::unique_ptr<Regions_type>(new Regions_type);
 
@@ -104,11 +102,12 @@ public:
     cv::eigen2cv(image.GetMat(), img);
 
     cv::Mat m_mask;
-    if (mask != nullptr) {
+    if (mask != nullptr)
+    {
       cv::eigen2cv(mask->GetMat(), m_mask);
     }
 
-    std::vector< cv::KeyPoint > vec_keypoints;
+    std::vector<cv::KeyPoint> vec_keypoints;
     cv::Mat m_desc;
 
     extractor->detectAndCompute(img, m_mask, vec_keypoints, m_desc);
@@ -122,13 +121,14 @@ public:
       using DescriptorT = Descriptor<float, 64>;
       DescriptorT descriptor;
       int cpt = 0;
-      for (auto i_keypoint = vec_keypoints.begin(); i_keypoint != vec_keypoints.end(); ++i_keypoint, ++cpt){
+      for (auto i_keypoint = vec_keypoints.begin(); i_keypoint != vec_keypoints.end(); ++i_keypoint, ++cpt)
+      {
         const SIOPointFeature feat((*i_keypoint).pt.x, (*i_keypoint).pt.y, (*i_keypoint).size, (*i_keypoint).angle);
         regions->Features().push_back(feat);
 
         memcpy(descriptor.data(),
                m_desc.ptr<typename DescriptorT::bin_type>(cpt),
-               DescriptorT::static_size*sizeof(DescriptorT::bin_type));
+               DescriptorT::static_size * sizeof(DescriptorT::bin_type));
         regions->Descriptors().push_back(descriptor);
       }
     }
@@ -141,8 +141,8 @@ public:
     return std::unique_ptr<Regions_type>(new Regions_type);
   }
 
-  template<class Archive>
-  void serialize( Archive & ar )
+  template <class Archive>
+  void serialize(Archive &ar)
   {
   }
 };
@@ -163,14 +163,16 @@ public:
   // Declare a SIFT detector
   cv::Ptr<cv::Feature2D> siftdetector;
 
-  SIFT_OPENCV_Image_describer() : Image_describer() {
+  SIFT_OPENCV_Image_describer() : Image_describer()
+  {
     // Create a SIFT detector
     siftdetector = cv::SIFT::create();
   }
 
   ~SIFT_OPENCV_Image_describer() {}
 
-  bool Set_configuration_preset(EDESCRIBER_PRESET preset){
+  bool Set_configuration_preset(EDESCRIBER_PRESET preset)
+  {
     return true;
   }
 
@@ -182,9 +184,8 @@ public:
   @return regions The detected regions and attributes (the caller must delete the allocated data)
   */
   std::unique_ptr<Regions> Describe(
-    const image::Image<unsigned char>& image,
-    const image::Image<unsigned char> * mask = nullptr
-  ) override
+      const image::Image<unsigned char> &image,
+      const image::Image<unsigned char> *mask = nullptr) override
   {
     return Describe_SIFT_OPENCV(image, mask);
   }
@@ -197,9 +198,8 @@ public:
   @return regions The detected regions and attributes (the caller must delete the allocated data)
   */
   std::unique_ptr<Regions_type> Describe_SIFT_OPENCV(
-      const image::Image<unsigned char>& image,
-      const image::Image<unsigned char>* mask = nullptr
-  )
+      const image::Image<unsigned char> &image,
+      const image::Image<unsigned char> *mask = nullptr)
   {
     // Convert for opencv
     cv::Mat img;
@@ -207,12 +207,13 @@ public:
 
     // Convert mask image into cv::Mat
     cv::Mat m_mask;
-    if (mask != nullptr) {
+    if (mask != nullptr)
+    {
       cv::eigen2cv(mask->GetMat(), m_mask);
     }
 
     // Create a Keypoints & Descriptors container
-    std::vector< cv::KeyPoint > v_keypoints;
+    std::vector<cv::KeyPoint> v_keypoints;
     cv::Mat m_desc;
 
     // Process SIFT computation
@@ -231,8 +232,8 @@ public:
     // Copy keypoints and descriptors in the regions
     int cpt = 0;
     for (auto i_kp = v_keypoints.begin();
-        i_kp != v_keypoints.end();
-        ++i_kp, ++cpt)
+         i_kp != v_keypoints.end();
+         ++i_kp, ++cpt)
     {
       SIOPointFeature feat((*i_kp).pt.x, (*i_kp).pt.y, (*i_kp).size, (*i_kp).angle);
       regions->Features().push_back(feat);
@@ -240,7 +241,7 @@ public:
       Descriptor<unsigned char, 128> desc;
       for (int j = 0; j < 128; j++)
       {
-        desc[j] = static_cast<unsigned char>(512.0*sqrt(m_desc.at<float>(cpt, j)/m_siftsum.at<float>(cpt, 0)));
+        desc[j] = static_cast<unsigned char>(512.0 * sqrt(m_desc.at<float>(cpt, j) / m_siftsum.at<float>(cpt, 0)));
       }
       regions->Descriptors().push_back(desc);
     }
@@ -254,14 +255,14 @@ public:
     return std::unique_ptr<Regions_type>(new Regions_type);
   }
 
-  template<class Archive>
-  void serialize( Archive & ar )
+  template <class Archive>
+  void serialize(Archive &ar)
   {
   }
 };
 CEREAL_REGISTER_TYPE_WITH_NAME(SIFT_OPENCV_Image_describer, "SIFT_OPENCV_Image_describer");
 CEREAL_REGISTER_POLYMORPHIC_RELATION(openMVG::features::Image_describer, SIFT_OPENCV_Image_describer)
-#endif //USE_OCVSIFT
+#endif // USE_OCVSIFT
 
 /// Compute between the Views
 /// Compute view image description (feature & descriptor extraction using OpenCV)
@@ -280,46 +281,51 @@ int main(int argc, char **argv)
 #endif
 
   // required
-  cmd.add( make_option('i', sSfM_Data_Filename, "input_file") );
-  cmd.add( make_option('o', sOutDir, "outdir") );
+  cmd.add(make_option('i', sSfM_Data_Filename, "input_file"));
+  cmd.add(make_option('o', sOutDir, "outdir"));
   // Optional
-  cmd.add( make_option('f', bForce, "force") );
+  cmd.add(make_option('f', bForce, "force"));
 #ifdef USE_OCVSIFT
-  cmd.add( make_option('m', sImage_Describer_Method, "describerMethod") );
+  cmd.add(make_option('m', sImage_Describer_Method, "describerMethod"));
 #endif
 
-  try {
-    if (argc == 1) throw std::string("Invalid command line parameter.");
+  try
+  {
+    if (argc == 1)
+      throw std::string("Invalid command line parameter.");
     cmd.process(argc, argv);
-  } catch (const std::string& s) {
+  }
+  catch (const std::string &s)
+  {
     OPENMVG_LOG_INFO << "Usage: " << argv[0] << '\n'
-      << "[-i|--input_file]: a SfM_Data file \n"
-      << "[-o|--outdir] path \n"
-      << "\n[Optional]\n"
-      << "[-f|--force] Force to recompute data\n"
+                     << "[-i|--input_file]: a SfM_Data file \n"
+                     << "[-o|--outdir] path \n"
+                     << "\n[Optional]\n"
+                     << "[-f|--force] Force to recompute data\n"
 #ifdef USE_OCVSIFT
-      << "[-m|--describerMethod]\n"
-      << "  (method to use to describe an image):\n"
-      << "   AKAZE_OPENCV (default),\n"
-      << "   SIFT_OPENCV: SIFT FROM OPENCV\n"
+                     << "[-m|--describerMethod]\n"
+                     << "  (method to use to describe an image):\n"
+                     << "   AKAZE_OPENCV (default),\n"
+                     << "   SIFT_OPENCV: SIFT FROM OPENCV\n"
 #endif
-      ;
+        ;
 
     OPENMVG_LOG_ERROR << s;
     return EXIT_FAILURE;
   }
 
   OPENMVG_LOG_INFO
-    << " You called : "
-    << argv[0]
-    << "\n\t--input_file " << sSfM_Data_Filename
-    << "\n\t--outdir " << sOutDir
+      << " You called : "
+      << argv[0]
+      << "\n\t--input_file " << sSfM_Data_Filename
+      << "\n\t--outdir " << sOutDir
 #ifdef USE_OCVSIFT
-    << "\n\t--describerMethod " << sImage_Describer_Method
+      << "\n\t--describerMethod " << sImage_Describer_Method
 #endif
-    << "\n\t--force " << bForce;
+      << "\n\t--force " << bForce;
 
-  if (sOutDir.empty())  {
+  if (sOutDir.empty())
+  {
     OPENMVG_LOG_ERROR << "\nIt is an invalid output directory";
     return EXIT_FAILURE;
   }
@@ -338,8 +344,9 @@ int main(int argc, char **argv)
   // a. Load input scene
   //---------------------------------------
   SfM_Data sfm_data;
-  if (!Load(sfm_data, sSfM_Data_Filename, ESfM_Data(VIEWS|INTRINSICS))) {
-    OPENMVG_LOG_ERROR << "The input file \""<< sSfM_Data_Filename << "\" cannot be read";
+  if (!Load(sfm_data, sSfM_Data_Filename, ESfM_Data(VIEWS | INTRINSICS)))
+  {
+    OPENMVG_LOG_ERROR << "The input file \"" << sSfM_Data_Filename << "\" cannot be read";
     return false;
   }
 
@@ -368,8 +375,7 @@ int main(int argc, char **argv)
     {
       image_describer.reset(new AKAZE_OCV_Image_describer);
     }
-    else
-    if (sImage_Describer_Method == "SIFT_OPENCV")
+    else if (sImage_Describer_Method == "SIFT_OPENCV")
     {
       image_describer.reset(new SIFT_OPENCV_Image_describer());
     }
@@ -404,21 +410,21 @@ int main(int argc, char **argv)
     system::Timer timer;
     Image<unsigned char> imageGray;
 
-    system::LoggerProgress my_progress_bar(sfm_data.GetViews().size(), "- EXTRACT FEATURES -" );
+    system::LoggerProgress my_progress_bar(sfm_data.GetViews().size(), "- EXTRACT FEATURES -");
 
     // Use a boolean to track if we must stop feature extraction
     bool preemptive_exit(false);
     for (auto iterViews = sfm_data.views.cbegin();
-        iterViews != sfm_data.views.cend() && !preemptive_exit;
-        ++iterViews)
+         iterViews != sfm_data.views.cend() && !preemptive_exit;
+         ++iterViews)
     {
-      const View * view = iterViews->second.get();
+      const View *view = iterViews->second.get();
       const std::string
-        sView_filename = stlplus::create_filespec(sfm_data.s_root_path, view->s_Img_path),
-        sFeat = stlplus::create_filespec(sOutDir, stlplus::basename_part(sView_filename), "feat"),
-        sDesc = stlplus::create_filespec(sOutDir, stlplus::basename_part(sView_filename), "desc");
+          sView_filename = stlplus::create_filespec(sfm_data.s_root_path, view->s_Img_path),
+          sFeat = stlplus::create_filespec(sOutDir, stlplus::basename_part(sView_filename), "feat"),
+          sDesc = stlplus::create_filespec(sOutDir, stlplus::basename_part(sView_filename), "desc");
 
-      //If features or descriptors file are missing, compute them
+      // If features or descriptors file are missing, compute them
       if (bForce || !stlplus::file_exists(sFeat) || !stlplus::file_exists(sDesc))
       {
         if (!ReadImage(sView_filename.c_str(), &imageGray))
@@ -427,14 +433,14 @@ int main(int argc, char **argv)
         //
         // Look if there is occlusion feature mask
         //
-        Image<unsigned char> * mask = nullptr; // The mask is null by default
+        Image<unsigned char> *mask = nullptr; // The mask is null by default
 
         const std::string
-          mask_filename_local =
-            stlplus::create_filespec(sfm_data.s_root_path,
-              stlplus::basename_part(sView_filename) + "_mask", "png"),
-          mask_filename_global =
-            stlplus::create_filespec(sfm_data.s_root_path, "mask", "png");
+            mask_filename_local =
+                stlplus::create_filespec(sfm_data.s_root_path,
+                                         stlplus::basename_part(sView_filename) + "_mask", "png"),
+            mask_filename_global =
+                stlplus::create_filespec(sfm_data.s_root_path, "mask", "png");
 
         Image<unsigned char> imageMask;
         // Try to read the local mask
@@ -443,8 +449,8 @@ int main(int argc, char **argv)
           if (!ReadImage(mask_filename_local.c_str(), &imageMask))
           {
             OPENMVG_LOG_ERROR
-              << "Invalid mask: " << mask_filename_local
-              << "\nStopping feature extraction.";
+                << "Invalid mask: " << mask_filename_local
+                << "\nStopping feature extraction.";
             preemptive_exit = true;
             continue;
           }
@@ -460,8 +466,8 @@ int main(int argc, char **argv)
             if (!ReadImage(mask_filename_global.c_str(), &imageMask))
             {
               OPENMVG_LOG_ERROR
-                << "Invalid mask: " << mask_filename_global
-                << "\nStopping feature extraction.";
+                  << "Invalid mask: " << mask_filename_global
+                  << "\nStopping feature extraction.";
               preemptive_exit = true;
               continue;
             }
@@ -473,10 +479,11 @@ int main(int argc, char **argv)
 
         // Compute features and descriptors and export them to files
         auto regions = image_describer->Describe(imageGray, mask);
-        if (regions && !image_describer->Save(regions.get(), sFeat, sDesc)) {
+        if (regions && !image_describer->Save(regions.get(), sFeat, sDesc))
+        {
           OPENMVG_LOG_ERROR
-            << "Cannot save regions for images: " << sView_filename
-            << "\nStopping feature extraction.";
+              << "Cannot save regions for images: " << sView_filename
+              << "\nStopping feature extraction.";
           preemptive_exit = true;
           continue;
         }
