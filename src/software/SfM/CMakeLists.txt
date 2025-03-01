@@ -41,7 +41,7 @@ include_directories(${OpenCV_INCLUDE_DIRS})
 add_executable(openMVG_main_ComputeFeatures main_ComputeFeatures.cpp)
 target_link_libraries(openMVG_main_ComputeFeatures
   PRIVATE
-    /usr/local/lib/libonnxruntime.so
+    # /usr/local/lib/libonnxruntime.so
     openMVG_system
     openMVG_image
     openMVG_features
