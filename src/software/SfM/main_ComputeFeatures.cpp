@@ -51,7 +51,7 @@ private:
   float *input = nullptr, *kp = nullptr, *score = nullptr, *desc = nullptr;
   size_t input_size, kp_size, score_size, desc_size;
 
-  Eigen::Matrix<unsigned char, Eigen::Dynamic, Eigen::Dynamic> img_input;
+  Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic> img_input;
 
   const char *input_name = "image";
   struct
@@ -62,7 +62,7 @@ private:
   } output_names;
 
 public:
-  SuperPoint_Image_describer(std::unique_ptr<nvinfer1::IExecutionContext> context) : Image_describer(), context(std::move(context)) {}
+  SuperPoint_Image_describer(std::unique_ptr<nvinfer1::IExecutionContext> context) : Image_describer(), context(std::move(context))
   {
     cudaStreamCreate(&stream);
   }
@@ -85,7 +85,7 @@ public:
     return true;
   }
 
-  inline size_t units_size(nvinfer1::Dims &dims)
+  inline size_t units_size(nvinfer1::Dims &&dims)
   {
     size_t output_size = 1;
     for (int j = 0; j < dims.nbDims; ++j)
@@ -95,7 +95,7 @@ public:
     return output_size;
   }
 
-  void print_dims(nvinfer1::Dims &dims, const char *name)
+  void print_dims(nvinfer1::Dims &&dims, const char *name)
   {
     char *buffer = new char[256];
     std::sprintf(buffer, "%s has shape: [", name);
@@ -107,18 +107,18 @@ public:
     OPENMVG_LOG_INFO << buffer;
   }
 
-  void check_size(size_t desire_size, void *&current_buffer, size_t &current_size)
+  void check_size(size_t desire_size, void **current_buffer, size_t &current_size)
   {
-    if (current_buffer == nullptr || current_size < desire_size)
+    if (*current_buffer == nullptr || current_size < desire_size)
     {
       if (current_buffer)
       {
-        if (cudaFreeAsync(current_buffer, this->stream) != cudaSuccess)
+        if (cudaFreeAsync(*current_buffer, this->stream) != cudaSuccess)
         {
           OPENMVG_LOG_ERROR << "Failed to free memory on device";
         }
       }
-      if (cudaMallocAsync(&current_buffer, desire_size, this->stream) != cudaSuccess)
+      if (cudaMallocAsync(current_buffer, desire_size, this->stream) != cudaSuccess)
       {
         OPENMVG_LOG_ERROR << "Failed to allocate memory on device";
       }
@@ -145,12 +145,12 @@ public:
     img_input /= 255.0f;
     const size_t input_size = img_input.size() * sizeof(float);
 
-    this->check_size(input_size, this->input, this->input_size);
+    this->check_size(input_size, reinterpret_cast<void**>(&this->input), this->input_size);
     cudaMemcpyAsync(this->input, img_input.data(), input_size, cudaMemcpyHostToDevice, this->stream);
 
-    OPENMVG_LOG_INFO << "Input tensor prepared with shape: [" << img_input.rows << ", " << img_input.cols << "]";
+    OPENMVG_LOG_INFO << "Input tensor prepared with shape: [" << img_input.rows() << ", " << img_input.cols() << "]";
 
-    this->context->setInputShape(this->input_name, nvinfer1::Dims4(1, 1, img_input.rows, img_input.cols));
+    this->context->setInputShape(this->input_name, nvinfer1::Dims4(1, 1, img_input.rows(), img_input.cols()));
     this->context->setTensorAddress(this->input_name, this->input);
 
     size_t kp_units = this->units_size(this->context->getTensorShape(this->output_names.keypoints));
@@ -161,9 +161,9 @@ public:
     this->print_dims(this->context->getTensorShape(this->output_names.scores), this->output_names.scores);
     this->print_dims(this->context->getTensorShape(this->output_names.descriptors), this->output_names.descriptors);
 
-    this->check_size(kp_units * sizeof(float), this->kp, this->kp_size);
-    this->check_size(score_size * sizeof(float), this->score, this->score_size);
-    this->check_size(desc_size * sizeof(float), this->desc, this->desc_size);
+    this->check_size(kp_units * sizeof(float), reinterpret_cast<void**>(&this->kp), this->kp_size);
+    this->check_size(score_size * sizeof(float), reinterpret_cast<void**>(&this->score), this->score_size);
+    this->check_size(desc_size * sizeof(float), reinterpret_cast<void**>(&this->desc), this->desc_size);
 
     this->context->setTensorAddress(this->output_names.keypoints, this->kp);
     this->context->setTensorAddress(this->output_names.scores, this->score);
@@ -179,7 +179,7 @@ public:
     cudaMemcpyAsync(this->score_h.data(), this->score, score_units * sizeof(float), cudaMemcpyDeviceToHost);
     cudaMemcpyAsync(this->desc_h.data(), this->desc, desc_units * sizeof(float), cudaMemcpyDeviceToHost);
 
-    cudaStreamSynchoronize(stream);
+    cudaStreamSynchronize(stream);
 
     OPENMVG_LOG_INFO << "Inference completed successfully";
 
@@ -224,17 +224,15 @@ public:
 class NVInferEnv
 {
 private:
-  std::unique_ptr<nvinfer1::IRuntime> runtime;
-  std::unique_ptr<nvinfer1::ICudaEngine> engine;
   class Logger : public nvinfer1::ILogger
   {
   private:
-    nvinfer1::Severity reportableSeverity;
+  nvinfer1::ILogger::Severity reportableSeverity;
 
   public:
-    explicit Logger(nvinfer1::Severity severity = nvinfer1::Severity::kINFO) : reportableSeverity(severity) {}
+    explicit Logger(nvinfer1::ILogger::Severity severity = nvinfer1::ILogger::Severity::kINFO) : reportableSeverity(severity) {}
 
-    void log(nvinfer1::Severity severity, const char *msg) noexcept override
+    void log(nvinfer1::ILogger::Severity severity, const char *msg) noexcept override
     {
       if (severity > reportableSeverity)
       {
@@ -242,29 +240,28 @@ private:
       }
       switch (severity)
       {
-      case nvinfer1::Severity::kINTERNAL_ERROR:
+      case nvinfer1::ILogger::Severity::kINTERNAL_ERROR:
         OPENMVG_LOG_ERROR << "[TensorRT] INTERNAL_ERROR: " << msg;
         break;
-      case nvinfer1::Severity::kERROR:
+      case nvinfer1::ILogger::Severity::kERROR:
         OPENMVG_LOG_ERROR << "[TensorRT] ERROR: " << msg;
         break;
-      case nvinfer1::Severity::kWARNING:
+      case nvinfer1::ILogger::Severity::kWARNING:
         OPENMVG_LOG_WARNING << "[TensorRT] WARNING: " << msg;
         break;
-      case nvinfer1::Severity::kINFO:
+      case nvinfer1::ILogger::Severity::kINFO:
         OPENMVG_LOG_INFO << "[TensorRT] INFO: " << msg;
         break;
-      case nvinfer1::Severity::kVERBOSE:
+      case nvinfer1::ILogger::Severity::kVERBOSE:
         OPENMVG_LOG_INFO << "[TensorRT] VERBOSE: " << msg;
-        break;
-      case nvinfer1::Severity::kDEBUG:
-        OPENMVG_LOG_INFO << "[TensorRT] DEBUG: " << msg;
         break;
       }
     }
   };
-
   Logger logger;
+
+  std::unique_ptr<nvinfer1::IRuntime> runtime;
+  std::unique_ptr<nvinfer1::ICudaEngine> engine;
 
 public:
   NVInferEnv(const std::string &model_path)
@@ -275,16 +272,16 @@ public:
       OPENMVG_LOG_ERROR << "Failed to open model file: " << model_path;
       return;
     }
-    std::vector<char> engine_data(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+    std::vector<char> engine_data(std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>());
     file.close();
 
-    this->runtime = std::make_unique(nvinfer1::createInferRuntime(logger));
-    this->engine = std::make_uniquea(runtime->deserializeCudaEngine(engine_data.data(), engine_data.size(), nullptr));
+    this->runtime = std::unique_ptr<nvinfer1::IRuntime>(nvinfer1::createInferRuntime(logger));
+    this->engine = std::unique_ptr<nvinfer1::ICudaEngine>(runtime->deserializeCudaEngine(engine_data.data(), engine_data.size()));
   }
 
-  SuperPoint_Image_describer create_describer()
+  std::unique_ptr<SuperPoint_Image_describer> create_describer()
   {
-    return SuperPoint_Image_describer(std::move(this->engine->createExecutionContext()));
+    return std::unique_ptr<SuperPoint_Image_describer>(new SuperPoint_Image_describer(std::unique_ptr<nvinfer1::IExecutionContext>(this->engine->createExecutionContext())));
   }
 };
 
@@ -404,24 +401,6 @@ int main(int argc, char **argv)
 
   using namespace openMVG::features;
 
-  std::unique_ptr<Image_describer> image_describer;
-  image_describer.reset(new SuperPoint_Image_describer("/model/superpoint.onnx"));
-
-  if (!image_describer)
-  {
-    OPENMVG_LOG_ERROR << "Cannot create SuperPoint Image_describer";
-    return EXIT_FAILURE;
-  }
-  else
-  {
-    if (!sFeaturePreset.empty())
-      if (!image_describer->Set_configuration_preset(stringToEnum(sFeaturePreset)))
-      {
-        OPENMVG_LOG_ERROR << "Preset configuration failed.";
-        return EXIT_FAILURE;
-      }
-  }
-
   // Feature extraction routines
   // For each View of the SfM_Data container:
   // - if regions file exists continue,
@@ -435,7 +414,7 @@ int main(int argc, char **argv)
     // Use a boolean to track if we must stop feature extraction
     std::atomic<bool> preemptive_exit(false);
 
-    NVInferEnv env("/model/superpoint.onnx");
+    NVInferEnv env("/models/superpoint.engine");
 
     const unsigned int nb_max_thread = omp_get_max_threads();
 
@@ -447,11 +426,10 @@ int main(int argc, char **argv)
     {
       omp_set_num_threads(nb_max_thread);
     }
-    OPENMVG_LOG_INFO << "OpenMP enabled!!!!!!!";
-    OPENMVG_LOG_INFO << "Set the maximum number of threads to: " << omp_get_max_threads();
 
-#pragma omp parallel {
-    SuperPoint_Image_describer image_describer = env.create_describer();
+#pragma omp parallel 
+{
+    std::unique_ptr<Image_describer> image_describer = env.create_describer();
 #pragma omp for schedule(dynamic) private(imageGray)
     for (int i = 0; i < static_cast<int>(sfm_data.views.size()); ++i)
     {

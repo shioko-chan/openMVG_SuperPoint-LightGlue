@@ -38,7 +38,7 @@ install(TARGETS openMVG_main_ConvertList DESTINATION bin/)
 find_package(OpenCV REQUIRED)
 include_directories(${OpenCV_INCLUDE_DIRS})
 
-find_package(CUDA REQUIRED)
+find_package(CUDAToolkit REQUIRED)
 include_directories(${CUDA_INCLUDE_DIRS})
 
 include_directories(/usr/include/x86_64-linux-gnu/)
@@ -54,7 +54,7 @@ target_link_libraries(openMVG_main_ComputeFeatures
     openMVG_sfm
     ${CUDA_LIBRARIES}
     nvinfer
-    cudart
+    CUDA::cudart
     ${OpenCV_LIBS}
     ${STLPLUS_LIBRARY}
     vlsift
