@@ -44,6 +44,188 @@
 class SuperPoint_Image_describer : public openMVG::features::Image_describer
 {
 private:
+  std::unique_ptr<nvinfer1::IExecutionContext> context;
+  cudaStream_t stream;
+
+  std::vector<float> kp_h, score_h, desc_h;
+  float *input = nullptr, *kp = nullptr, *score = nullptr, *desc = nullptr;
+  size_t input_size, kp_size, score_size, desc_size;
+
+  Eigen::Matrix<unsigned char, Eigen::Dynamic, Eigen::Dynamic> img_input;
+
+  const char *input_name = "image";
+  struct
+  {
+    const char *keypoints = "keypoints";
+    const char *scores = "scores";
+    const char *descriptors = "descriptors";
+  } output_names;
+
+public:
+  SuperPoint_Image_describer(std::unique_ptr<nvinfer1::IExecutionContext> context) : Image_describer(), context(std::move(context)) {}
+  {
+    cudaStreamCreate(&stream);
+  }
+
+  ~SuperPoint_Image_describer()
+  {
+    if (this->input)
+      cudaFree(this->input);
+    if (this->kp)
+      cudaFree(this->kp);
+    if (this->score)
+      cudaFree(this->score);
+    if (this->desc)
+      cudaFree(this->desc);
+    cudaStreamDestroy(stream);
+  }
+
+  bool Set_configuration_preset(openMVG::features::EDESCRIBER_PRESET preset) override
+  {
+    return true;
+  }
+
+  inline size_t units_size(nvinfer1::Dims &dims)
+  {
+    size_t output_size = 1;
+    for (int j = 0; j < dims.nbDims; ++j)
+    {
+      output_size *= dims.d[j];
+    }
+    return output_size;
+  }
+
+  void print_dims(nvinfer1::Dims &dims, const char *name)
+  {
+    char *buffer = new char[256];
+    std::sprintf(buffer, "%s has shape: [", name);
+    for (int j = 0; j < dims.nbDims; ++j)
+    {
+      std::sprintf(buffer, "%s%d, ", buffer, dims.d[j]);
+    }
+    std::sprintf(buffer, "%s]", buffer);
+    OPENMVG_LOG_INFO << buffer;
+  }
+
+  void check_size(size_t desire_size, void *&current_buffer, size_t &current_size)
+  {
+    if (current_buffer == nullptr || current_size < desire_size)
+    {
+      if (current_buffer)
+      {
+        if (cudaFreeAsync(current_buffer, this->stream) != cudaSuccess)
+        {
+          OPENMVG_LOG_ERROR << "Failed to free memory on device";
+        }
+      }
+      if (cudaMallocAsync(&current_buffer, desire_size, this->stream) != cudaSuccess)
+      {
+        OPENMVG_LOG_ERROR << "Failed to allocate memory on device";
+      }
+      current_size = desire_size;
+    }
+  }
+
+  void check_size(size_t desire_size, std::vector<float> &current_buffer)
+  {
+    if (current_buffer.size() < desire_size)
+    {
+      current_buffer.resize(desire_size);
+    }
+  }
+
+  std::unique_ptr<openMVG::features::Regions> Describe(const openMVG::image::Image<unsigned char> &image, const openMVG::image::Image<unsigned char> *mask = nullptr) override
+  {
+    if (img_input.rows() != image.Height() || img_input.cols() != image.Width())
+    {
+      OPENMVG_LOG_INFO << "!!!!!Resizing buffer to: [" << image.Height() << ", " << image.Width() << "]";
+      img_input.resize(image.Height(), image.Width());
+    }
+    img_input = image.cast<float>();
+    img_input /= 255.0f;
+    const size_t input_size = img_input.size() * sizeof(float);
+
+    this->check_size(input_size, this->input, this->input_size);
+    cudaMemcpyAsync(this->input, img_input.data(), input_size, cudaMemcpyHostToDevice, this->stream);
+
+    OPENMVG_LOG_INFO << "Input tensor prepared with shape: [" << img_input.rows << ", " << img_input.cols << "]";
+
+    this->context->setInputShape(this->input_name, nvinfer1::Dims4(1, 1, img_input.rows, img_input.cols));
+    this->context->setTensorAddress(this->input_name, this->input);
+
+    size_t kp_units = this->units_size(this->context->getTensorShape(this->output_names.keypoints));
+    size_t score_units = this->units_size(this->context->getTensorShape(this->output_names.scores));
+    size_t desc_units = this->units_size(this->context->getTensorShape(this->output_names.descriptors));
+
+    this->print_dims(this->context->getTensorShape(this->output_names.keypoints), this->output_names.keypoints);
+    this->print_dims(this->context->getTensorShape(this->output_names.scores), this->output_names.scores);
+    this->print_dims(this->context->getTensorShape(this->output_names.descriptors), this->output_names.descriptors);
+
+    this->check_size(kp_units * sizeof(float), this->kp, this->kp_size);
+    this->check_size(score_size * sizeof(float), this->score, this->score_size);
+    this->check_size(desc_size * sizeof(float), this->desc, this->desc_size);
+
+    this->context->setTensorAddress(this->output_names.keypoints, this->kp);
+    this->context->setTensorAddress(this->output_names.scores, this->score);
+    this->context->setTensorAddress(this->output_names.descriptors, this->desc);
+
+    this->context->enqueueV3(this->stream);
+
+    this->check_size(kp_units, this->kp_h);
+    this->check_size(score_units, this->score_h);
+    this->check_size(desc_units, this->desc_h);
+
+    cudaMemcpyAsync(this->kp_h.data(), this->kp, kp_units * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpyAsync(this->score_h.data(), this->score, score_units * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpyAsync(this->desc_h.data(), this->desc, desc_units * sizeof(float), cudaMemcpyDeviceToHost);
+
+    cudaStreamSynchoronize(stream);
+
+    OPENMVG_LOG_INFO << "Inference completed successfully";
+
+    const int num_keypoints = kp_units / 2;
+
+    if (num_keypoints == 0)
+    {
+      OPENMVG_LOG_WARNING << "No keypoints detected!";
+      return std::make_unique<openMVG::features::SuperPoint_Regions>();
+    }
+
+    auto regions = std::make_unique<openMVG::features::SuperPoint_Regions>();
+    regions->Features().reserve(num_keypoints);
+    regions->Descriptors().reserve(num_keypoints);
+
+    OPENMVG_LOG_INFO << "Number of keypoints detected: " << num_keypoints;
+
+    for (int i = 0; i < num_keypoints; ++i)
+    {
+      const float x = this->kp_h[i * 2];
+      const float y = this->kp_h[i * 2 + 1];
+      regions->Features().emplace_back(x, y);
+
+      openMVG::features::SuperPoint_Regions::DescriptorT descriptor;
+      const float *desc_start = this->desc_h.data() + i * 256;
+      std::copy(desc_start, desc_start + 256, descriptor.data());
+      regions->Descriptors().push_back(descriptor);
+    }
+
+    OPENMVG_LOG_INFO << "Feature extraction completed";
+
+    return regions;
+  }
+
+  std::unique_ptr<openMVG::features::Regions>
+  Allocate() const override
+  {
+    return std::unique_ptr<openMVG::features::SuperPoint_Regions>(new openMVG::features::SuperPoint_Regions);
+  }
+};
+
+class NVInferEnv
+{
+private:
+  std::unique_ptr<nvinfer1::IRuntime> runtime;
+  std::unique_ptr<nvinfer1::ICudaEngine> engine;
   class Logger : public nvinfer1::ILogger
   {
   private:
@@ -83,14 +265,10 @@ private:
   };
 
   Logger logger;
-  std::unique_ptr<nvinfer1::IRuntime> runtime;
-  std::unique_ptr<nvinfer1::ICudaEngine> engine;
-  std::unique_ptr<nvinfer1::IExecutionContext> context;
 
 public:
-  SuperPoint_Image_describer(const std::string &model_path) : Image_describer()
+  NVInferEnv(const std::string &model_path)
   {
-    std::cout << "SuperPoint_Image_describer" << std::endl;
     std::ifstream file(model_path, std::ios::binary);
     if (!file.is_open())
     {
@@ -100,137 +278,13 @@ public:
     std::vector<char> engine_data(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
     file.close();
 
-    this->runtime = std::make_unique(nvinfer1::createInferRuntime(this->logger));
+    this->runtime = std::make_unique(nvinfer1::createInferRuntime(logger));
     this->engine = std::make_uniquea(runtime->deserializeCudaEngine(engine_data.data(), engine_data.size(), nullptr));
-    this->context = std::make_unique(engine->createExecutionContext());
   }
 
-  bool Set_configuration_preset(openMVG::features::EDESCRIBER_PRESET preset) override
+  SuperPoint_Image_describer create_describer()
   {
-    return true;
-  }
-
-  inline size_t calculate_size(nvinfer1::Dims &dims)
-  {
-    size_t output_size = 1;
-    for (int j = 0; j < dims.nbDims; ++j)
-    {
-      output_size *= dims.d[j];
-    }
-    return output_size;
-  }
-
-  void print_dims(nvinfer1::Dims &dims, const char *name)
-  {
-    char *buffer = new char[256];
-    std::sprintf(buffer, "%s has shape: [", name);
-    for (int j = 0; j < dims.nbDims; ++j)
-    {
-      std::sprintf(buffer, "%s%d, ", buffer, dims.d[j]);
-    }
-    std::sprintf(buffer, "%s]", buffer);
-    OPENMVG_LOG_INFO << buffer;
-  }
-
-  std::unique_ptr<openMVG::features::Regions> Describe(
-      const openMVG::image::Image<unsigned char> &image,
-      const openMVG::image::Image<unsigned char> *mask = nullptr) override
-  {
-    cv::Mat img;
-    cv::eigen2cv(image.GetMat(), img);
-
-    cv::Mat img_input;
-    img.convertTo(img_input, CV_32FC1, 1.0 / 255.0);
-
-    const int input_size = img_input.total() * sizeof(float);
-
-    float *input;
-    cudaMalloc(&input, input_size);
-    cudaMemcpy(input, img_input.ptr<float>(), input_size, cudaMemcpyHostToDevice);
-
-    OPENMVG_LOG_INFO << "Input tensor prepared with shape: [" << img_input.rows << ", " << img_input.cols << "]";
-
-    const char *input_names[] = {"image"};
-    const int input_index = this->engine->getBindingIndex(input_names[0]);
-    this->context->setBindingDimensions(input_index, nvinfer1::Dims4(1, 1, img_input.rows, img_input.cols));
-    this->context->setTensorAddress(input_names[0], input);
-
-    const char *output_names[] = {"keypoints", "scores", "descriptors"};
-    std::vector<nvinfer1::Dims> output_dims(3);
-    std::vector<void *> outputs(3);
-    for (int i = 0; i < 3; ++i)
-    {
-      const int output_index = this->engine->getBindingIndex(output_names[i]);
-      output_dims[i] = this->context->getBindingDimensions(output_index);
-      print_dims(output_dims[i], output_names[i]);
-      cudaMalloc(&outputs[i], this->calculate_size(output_dims[i]) * sizeof(float));
-      this->context->setTensorAddress(output_names[i], outputs[i]);
-    }
-
-    cudaStream_t stream;
-    cudaStreamCreate(&stream);
-    this->context->enqueueV3(stream);
-
-    std::vector<std::vector<float>> host_outputs(3);
-    for (int i = 0; i < 3; ++i)
-    {
-      const int output_index = this->engine->getBindingIndex(output_names[i]);
-      print_dims(output_dims[i], output_names[i]);
-      const int output_size = this->calculate_size(this->context->getBindingDimensions(output_index));
-      host_outputs[i].resize(output_size);
-      cudaMemcpy(host_outputs[i].data(), outputs[i], output_size * sizeof(float), cudaMemcpyDeviceToHost);
-    }
-
-    cudaStreamSynchoronize(stream);
-
-    OPENMVG_LOG_INFO << "Inference completed successfully";
-
-    const std::Vector<float> &kp = host_outputs[0];    // keypoints [1, N, 2]
-    const std::Vector<float> &score = host_outputs[1]; // scores [1, N]
-    const std::Vector<float> &desc = host_outputs[2];  // descriptors [1, 256, N]
-
-    const int num_keypoints = output_dims[0].d[1];
-
-    if (num_keypoints == 0)
-    {
-      OPENMVG_LOG_WARNING << "No keypoints detected!";
-      return std::make_unique<openMVG::features::SuperPoint_Regions>();
-    }
-
-    auto regions = std::make_unique<openMVG::features::SuperPoint_Regions>();
-    regions->Features().reserve(num_keypoints);
-    regions->Descriptors().reserve(num_keypoints);
-
-    OPENMVG_LOG_INFO << "Number of keypoints detected: " << num_keypoints;
-
-    for (int i = 0; i < num_keypoints; ++i)
-    {
-      const float x = kp[i * 2 + 0];
-      const float y = kp[i * 2 + 1];
-      regions->Features().emplace_back(x, y);
-
-      openMVG::features::SuperPoint_Regions::DescriptorT descriptor;
-      const float *desc_start = desc + i * 256;
-      std::copy(desc_start, desc_start + 256, descriptor.data());
-      regions->Descriptors().push_back(descriptor);
-    }
-
-    cudaStreamDestroy(stream);
-    cudaFree(input);
-    for (int i = 0; i < 3; ++i)
-    {
-      cudaFree(outputs[i]);
-    }
-
-    OPENMVG_LOG_INFO << "Feature extraction completed";
-
-    return regions;
-  }
-
-  std::unique_ptr<openMVG::features::Regions>
-  Allocate() const override
-  {
-    return std::unique_ptr<openMVG::features::SuperPoint_Regions>(new openMVG::features::SuperPoint_Regions);
+    return SuperPoint_Image_describer(std::move(this->engine->createExecutionContext()));
   }
 };
 
@@ -257,8 +311,6 @@ int main(int argc, char **argv)
   std::string sSfM_Data_Filename;
   std::string sOutDir = "";
   bool bUpRight = false;
-  // std::string sImage_Describer_Method = "SUPERPOINT";
-  std::string sImage_Describer_Method = "SIFT";
   bool bForce = false;
   std::string sFeaturePreset = "";
 #ifdef OPENMVG_USE_OPENMP
@@ -269,7 +321,6 @@ int main(int argc, char **argv)
   cmd.add(make_option('i', sSfM_Data_Filename, "input_file"));
   cmd.add(make_option('o', sOutDir, "outdir"));
   // Optional
-  cmd.add(make_option('m', sImage_Describer_Method, "describerMethod"));
   cmd.add(make_option('u', bUpRight, "upright"));
   cmd.add(make_option('f', bForce, "force"));
   cmd.add(make_option('p', sFeaturePreset, "describerPreset"));
@@ -292,12 +343,6 @@ int main(int argc, char **argv)
         << "[-o|--outdir path] \n"
         << "\n[Optional]\n"
         << "[-f|--force] Force to recompute data\n"
-        << "[-m|--describerMethod]\n"
-        << "  (method to use to describe an image):\n"
-        << "   SIFT (default),\n"
-        << "   SIFT_ANATOMY,\n"
-        << "   AKAZE_FLOAT: AKAZE with floating point descriptors,\n"
-        << "   AKAZE_MLDB:  AKAZE with binary descriptors\n"
         << "[-u|--upright] Use Upright feature 0 or 1\n"
         << "[-p|--describerPreset]\n"
         << "  (used to control the Image_describer configuration):\n"
@@ -313,14 +358,11 @@ int main(int argc, char **argv)
     return EXIT_FAILURE;
   }
 
-  sImage_Describer_Method = "SUPERPOINT";
-
   OPENMVG_LOG_INFO
       << " You called : " << "\n"
       << argv[0] << "\n"
       << "--input_file " << sSfM_Data_Filename << "\n"
       << "--outdir " << sOutDir << "\n"
-      << "--describerMethod " << sImage_Describer_Method << "\n"
       << "--upright " << bUpRight << "\n"
       << "--describerPreset " << (sFeaturePreset.empty() ? "NORMAL" : sFeaturePreset) << "\n"
       << "--force " << bForce << "\n"
@@ -361,83 +403,23 @@ int main(int argc, char **argv)
   // - else create the desired one
 
   using namespace openMVG::features;
+
   std::unique_ptr<Image_describer> image_describer;
+  image_describer.reset(new SuperPoint_Image_describer("/model/superpoint.onnx"));
 
-  const std::string sImage_describer = stlplus::create_filespec(sOutDir, "image_describer", "json");
-
-  // if (!bForce && stlplus::is_file(sImage_describer))
-  // {
-
-  //   // Dynamically load the image_describer from the file (will restore old used settings)
-  //   std::ifstream stream(sImage_describer.c_str());
-  //   if (!stream)
-  //     return EXIT_FAILURE;
-
-  //   try
-  //   {
-  //     cereal::JSONInputArchive archive(stream);
-  //     archive(cereal::make_nvp("image_describer", image_describer));
-  //   }
-  //   catch (const cereal::Exception &e)
-  //   {
-  //     OPENMVG_LOG_ERROR << e.what() << '\n'
-  //                       << "Cannot dynamically allocate the Image_describer interface.";
-  //     return EXIT_FAILURE;
-  //   }
-  // }
-  // else
+  if (!image_describer)
   {
-    // Create the desired Image_describer method.
-    // Don't use a factory, perform direct allocation
-    if (sImage_Describer_Method == "SIFT")
-    {
-      image_describer.reset(new SIFT_Image_describer(SIFT_Image_describer::Params(), !bUpRight));
-    }
-    else if (sImage_Describer_Method == "SIFT_ANATOMY")
-    {
-      image_describer.reset(
-          new SIFT_Anatomy_Image_describer(SIFT_Anatomy_Image_describer::Params()));
-    }
-    else if (sImage_Describer_Method == "AKAZE_FLOAT")
-    {
-      image_describer = AKAZE_Image_describer::create(AKAZE_Image_describer::Params(AKAZE::Params(), AKAZE_MSURF), !bUpRight);
-    }
-    else if (sImage_Describer_Method == "AKAZE_MLDB")
-    {
-      image_describer = AKAZE_Image_describer::create(AKAZE_Image_describer::Params(AKAZE::Params(), AKAZE_MLDB), !bUpRight);
-    }
-    else if (sImage_Describer_Method == "SUPERPOINT")
-    {
-      image_describer.reset(new SuperPoint_Image_describer("/model/superpoint.onnx"));
-    }
-    if (!image_describer)
-    {
-      OPENMVG_LOG_ERROR << "Cannot create the designed Image_describer:"
-                        << sImage_Describer_Method << ".";
-      return EXIT_FAILURE;
-    }
-    else
-    {
-      if (!sFeaturePreset.empty())
-        if (!image_describer->Set_configuration_preset(stringToEnum(sFeaturePreset)))
-        {
-          OPENMVG_LOG_ERROR << "Preset configuration failed.";
-          return EXIT_FAILURE;
-        }
-    }
-
-    // Export the used Image_describer and region type for:
-    // - dynamic future regions computation and/or loading
-    // {
-    //   std::ofstream stream(sImage_describer.c_str());
-    //   if (!stream)
-    //     return EXIT_FAILURE;
-
-    //   cereal::JSONOutputArchive archive(stream);
-    //   archive(cereal::make_nvp("image_describer", image_describer));
-    //   auto regionsType = image_describer->Allocate();
-    //   archive(cereal::make_nvp("regions_type", regionsType));
-    // }
+    OPENMVG_LOG_ERROR << "Cannot create SuperPoint Image_describer";
+    return EXIT_FAILURE;
+  }
+  else
+  {
+    if (!sFeaturePreset.empty())
+      if (!image_describer->Set_configuration_preset(stringToEnum(sFeaturePreset)))
+      {
+        OPENMVG_LOG_ERROR << "Preset configuration failed.";
+        return EXIT_FAILURE;
+      }
   }
 
   // Feature extraction routines
@@ -452,7 +434,9 @@ int main(int argc, char **argv)
 
     // Use a boolean to track if we must stop feature extraction
     std::atomic<bool> preemptive_exit(false);
-#ifdef OPENMVG_USE_OPENMP
+
+    NVInferEnv env("/model/superpoint.onnx");
+
     const unsigned int nb_max_thread = omp_get_max_threads();
 
     if (iNumThreads > 0)
@@ -463,9 +447,12 @@ int main(int argc, char **argv)
     {
       omp_set_num_threads(nb_max_thread);
     }
+    OPENMVG_LOG_INFO << "OpenMP enabled!!!!!!!";
+    OPENMVG_LOG_INFO << "Set the maximum number of threads to: " << omp_get_max_threads();
 
-#pragma omp parallel for schedule(dynamic) private(imageGray)
-#endif
+#pragma omp parallel {
+    SuperPoint_Image_describer image_describer = env.create_describer();
+#pragma omp for schedule(dynamic) private(imageGray)
     for (int i = 0; i < static_cast<int>(sfm_data.views.size()); ++i)
     {
       openMVG::sfm::Views::const_iterator iterViews = sfm_data.views.begin();
@@ -482,55 +469,8 @@ int main(int argc, char **argv)
         if (!ReadImage(sView_filename.c_str(), &imageGray))
           continue;
 
-        //
-        // Look if there is an occlusion feature mask
-        //
-        openMVG::image::Image<unsigned char> *mask = nullptr; // The mask is null by default
-
-        const std::string
-            mask_filename_local =
-                stlplus::create_filespec(sfm_data.s_root_path,
-                                         stlplus::basename_part(sView_filename) + "_mask", "png"),
-            mask_filename_global =
-                stlplus::create_filespec(sfm_data.s_root_path, "mask", "png");
-
-        openMVG::image::Image<unsigned char> imageMask;
-        // Try to read the local mask
-        if (stlplus::file_exists(mask_filename_local))
-        {
-          if (!ReadImage(mask_filename_local.c_str(), &imageMask))
-          {
-            OPENMVG_LOG_ERROR
-                << "Invalid mask: " << mask_filename_local << ';'
-                << "Stopping feature extraction.";
-            preemptive_exit = true;
-            continue;
-          }
-          // Use the local mask only if it fits the current image size
-          if (imageMask.Width() == imageGray.Width() && imageMask.Height() == imageGray.Height())
-            mask = &imageMask;
-        }
-        else
-        {
-          // Try to read the global mask
-          if (stlplus::file_exists(mask_filename_global))
-          {
-            if (!ReadImage(mask_filename_global.c_str(), &imageMask))
-            {
-              OPENMVG_LOG_ERROR
-                  << "Invalid mask: " << mask_filename_global << ';'
-                  << "Stopping feature extraction.";
-              preemptive_exit = true;
-              continue;
-            }
-            // Use the global mask only if it fits the current image size
-            if (imageMask.Width() == imageGray.Width() && imageMask.Height() == imageGray.Height())
-              mask = &imageMask;
-          }
-        }
-
         // Compute features and descriptors and export them to files
-        auto regions = image_describer->Describe(imageGray, mask);
+        auto regions = image_describer->Describe(imageGray);
         if (regions && !image_describer->Save(regions.get(), sFeat, sDesc))
         {
           OPENMVG_LOG_ERROR
@@ -542,7 +482,8 @@ int main(int argc, char **argv)
       }
       ++my_progress_bar;
     }
-    OPENMVG_LOG_INFO << "Task done in (s): " << timer.elapsed();
   }
-  return EXIT_SUCCESS;
+  OPENMVG_LOG_INFO << "Task done in (s): " << timer.elapsed();
+}
+return EXIT_SUCCESS;
 }
