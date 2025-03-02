@@ -37,6 +37,7 @@
 #endif
 
 #include <NvInferRuntime.h>
+#include <NvOnnxParser.h>
 #include <cuda_runtime_api.h>
 #include <opencv2/opencv.hpp>
 #include <opencv2/core/eigen.hpp>
@@ -101,7 +102,7 @@ public:
     std::sprintf(buffer, "%s has shape: [", name);
     for (int j = 0; j < dims.nbDims; ++j)
     {
-      std::sprintf(buffer, "%s%d, ", buffer, dims.d[j]);
+      std::sprintf(buffer, "%s%ld, ", buffer, dims.d[j]);
     }
     std::sprintf(buffer, "%s]", buffer);
     OPENMVG_LOG_INFO << buffer;
@@ -145,13 +146,13 @@ public:
     img_input /= 255.0f;
     const size_t input_size = img_input.size() * sizeof(float);
 
-    this->check_size(input_size, reinterpret_cast<void**>(&this->input), this->input_size);
+    this->check_size(input_size, reinterpret_cast<void **>(&this->input), this->input_size);
     cudaMemcpyAsync(this->input, img_input.data(), input_size, cudaMemcpyHostToDevice, this->stream);
 
     OPENMVG_LOG_INFO << "Input tensor prepared with shape: [" << img_input.rows() << ", " << img_input.cols() << "]";
 
     this->context->setInputShape(this->input_name, nvinfer1::Dims4(1, 1, img_input.rows(), img_input.cols()));
-    this->context->setTensorAddress(this->input_name, this->input);
+    this->context->setInputTensorAddress(this->input_name, reinterpret_cast<void *>(this->input));
 
     size_t kp_units = this->units_size(this->context->getTensorShape(this->output_names.keypoints));
     size_t score_units = this->units_size(this->context->getTensorShape(this->output_names.scores));
@@ -161,13 +162,13 @@ public:
     this->print_dims(this->context->getTensorShape(this->output_names.scores), this->output_names.scores);
     this->print_dims(this->context->getTensorShape(this->output_names.descriptors), this->output_names.descriptors);
 
-    this->check_size(kp_units * sizeof(float), reinterpret_cast<void**>(&this->kp), this->kp_size);
-    this->check_size(score_size * sizeof(float), reinterpret_cast<void**>(&this->score), this->score_size);
-    this->check_size(desc_size * sizeof(float), reinterpret_cast<void**>(&this->desc), this->desc_size);
+    this->check_size(kp_units * sizeof(float), reinterpret_cast<void **>(&this->kp), this->kp_size);
+    this->check_size(score_size * sizeof(float), reinterpret_cast<void **>(&this->score), this->score_size);
+    this->check_size(desc_size * sizeof(float), reinterpret_cast<void **>(&this->desc), this->desc_size);
 
-    this->context->setTensorAddress(this->output_names.keypoints, this->kp);
-    this->context->setTensorAddress(this->output_names.scores, this->score);
-    this->context->setTensorAddress(this->output_names.descriptors, this->desc);
+    this->context->setOutputTensorAddress(this->output_names.keypoints, reinterpret_cast<void *>(this->kp));
+    this->context->setOutputTensorAddress(this->output_names.scores, reinterpret_cast<void *>(this->score));
+    this->context->setOutputTensorAddress(this->output_names.descriptors, reinterpret_cast<void *>(this->desc));
 
     this->context->enqueueV3(this->stream);
 
@@ -227,7 +228,7 @@ private:
   class Logger : public nvinfer1::ILogger
   {
   private:
-  nvinfer1::ILogger::Severity reportableSeverity;
+    nvinfer1::ILogger::Severity reportableSeverity;
 
   public:
     explicit Logger(nvinfer1::ILogger::Severity severity = nvinfer1::ILogger::Severity::kINFO) : reportableSeverity(severity) {}
@@ -260,23 +261,44 @@ private:
   };
   Logger logger;
 
-  std::unique_ptr<nvinfer1::IRuntime> runtime;
   std::unique_ptr<nvinfer1::ICudaEngine> engine;
 
 public:
-  NVInferEnv(const std::string &model_path)
+  NVInferEnv(const std::string &model_path = "/models/superpoint.onnx") : logger(nvinfer1::ILogger::Severity::kINFO)
   {
-    std::ifstream file(model_path, std::ios::binary);
-    if (!file.is_open())
+    nvinfer1::IBuilder *builder = nvinfer1::createInferBuilder(logger);
+    nvinfer1::INetworkDefinition *network = builder->createNetworkV2(1U << static_cast<unsigned int>(nvinfer1::NetworkDefinitionCreationFlag::kSTRONGLY_TYPED));
+
+    nvonnxparser::IParser *parser = nvonnxparser::createParser(*network, logger);
+    if (!parser->parseFromFile(model_path.c_str(), static_cast<int>(nvinfer1::ILogger::Severity::kINFO)))
     {
-      OPENMVG_LOG_ERROR << "Failed to open model file: " << model_path;
+      OPENMVG_LOG_ERROR << "Failed to parse ONNX model: " << model_path;
       return;
     }
-    std::vector<char> engine_data(std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>());
-    file.close();
 
-    this->runtime = std::unique_ptr<nvinfer1::IRuntime>(nvinfer1::createInferRuntime(logger));
-    this->engine = std::unique_ptr<nvinfer1::ICudaEngine>(runtime->deserializeCudaEngine(engine_data.data(), engine_data.size()));
+    nvinfer1::IBuilderConfig *config = builder->createBuilderConfig();
+    nvinfer1::IOptimizationProfile *profile = builder->createOptimizationProfile();
+
+    if (
+        !profile->setDimensions("image", nvinfer1::OptProfileSelector::kMIN, nvinfer1::Dims4(1, 1, 64, 64)) ||
+        !profile->setDimensions("image", nvinfer1::OptProfileSelector::kOPT, nvinfer1::Dims4(1, 1, 456, 684)) ||
+        !profile->setDimensions("image", nvinfer1::OptProfileSelector::kMAX, nvinfer1::Dims4(1, 1, 3648, 5472)))
+    {
+      OPENMVG_LOG_ERROR << "Failed to set optimization profile dimensions";
+    }
+
+    const int32_t profile_idx = config->addOptimizationProfile(profile);
+    if (profile_idx == -1)
+    {
+      OPENMVG_LOG_ERROR << "Failed to add optimization profile";
+    }
+    else
+    {
+      OPENMVG_LOG_INFO << "Optimization profile added with index: " << profile_idx;
+    }
+    config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, 4 * (static_cast<size_t>(1) << 30)); // 4GB
+
+    this->engine = std::unique_ptr<nvinfer1::ICudaEngine>(builder->buildEngineWithConfig(*network, *config));
   }
 
   std::unique_ptr<SuperPoint_Image_describer> create_describer()
@@ -414,7 +436,7 @@ int main(int argc, char **argv)
     // Use a boolean to track if we must stop feature extraction
     std::atomic<bool> preemptive_exit(false);
 
-    NVInferEnv env("/models/superpoint.engine");
+    NVInferEnv env;
 
     const unsigned int nb_max_thread = omp_get_max_threads();
 
@@ -427,41 +449,41 @@ int main(int argc, char **argv)
       omp_set_num_threads(nb_max_thread);
     }
 
-#pragma omp parallel 
-{
-    std::unique_ptr<Image_describer> image_describer = env.create_describer();
-#pragma omp for schedule(dynamic) private(imageGray)
-    for (int i = 0; i < static_cast<int>(sfm_data.views.size()); ++i)
+#pragma omp parallel
     {
-      openMVG::sfm::Views::const_iterator iterViews = sfm_data.views.begin();
-      std::advance(iterViews, i);
-      const openMVG::sfm::View *view = iterViews->second.get();
-      const std::string
-          sView_filename = stlplus::create_filespec(sfm_data.s_root_path, view->s_Img_path),
-          sFeat = stlplus::create_filespec(sOutDir, stlplus::basename_part(sView_filename), "feat"),
-          sDesc = stlplus::create_filespec(sOutDir, stlplus::basename_part(sView_filename), "desc");
-
-      // If features or descriptors file are missing, compute them
-      if (!preemptive_exit && (bForce || !stlplus::file_exists(sFeat) || !stlplus::file_exists(sDesc)))
+      std::unique_ptr<Image_describer> image_describer = env.create_describer();
+#pragma omp for schedule(dynamic) private(imageGray)
+      for (int i = 0; i < static_cast<int>(sfm_data.views.size()); ++i)
       {
-        if (!ReadImage(sView_filename.c_str(), &imageGray))
-          continue;
+        openMVG::sfm::Views::const_iterator iterViews = sfm_data.views.begin();
+        std::advance(iterViews, i);
+        const openMVG::sfm::View *view = iterViews->second.get();
+        const std::string
+            sView_filename = stlplus::create_filespec(sfm_data.s_root_path, view->s_Img_path),
+            sFeat = stlplus::create_filespec(sOutDir, stlplus::basename_part(sView_filename), "feat"),
+            sDesc = stlplus::create_filespec(sOutDir, stlplus::basename_part(sView_filename), "desc");
 
-        // Compute features and descriptors and export them to files
-        auto regions = image_describer->Describe(imageGray);
-        if (regions && !image_describer->Save(regions.get(), sFeat, sDesc))
+        // If features or descriptors file are missing, compute them
+        if (!preemptive_exit && (bForce || !stlplus::file_exists(sFeat) || !stlplus::file_exists(sDesc)))
         {
-          OPENMVG_LOG_ERROR
-              << "Cannot save regions for image: " << sView_filename << ';'
-              << "Stopping feature extraction.";
-          preemptive_exit = true;
-          continue;
+          if (!ReadImage(sView_filename.c_str(), &imageGray))
+            continue;
+
+          // Compute features and descriptors and export them to files
+          auto regions = image_describer->Describe(imageGray);
+          if (regions && !image_describer->Save(regions.get(), sFeat, sDesc))
+          {
+            OPENMVG_LOG_ERROR
+                << "Cannot save regions for image: " << sView_filename << ';'
+                << "Stopping feature extraction.";
+            preemptive_exit = true;
+            continue;
+          }
         }
+        ++my_progress_bar;
       }
-      ++my_progress_bar;
     }
+    OPENMVG_LOG_INFO << "Task done in (s): " << timer.elapsed();
   }
-  OPENMVG_LOG_INFO << "Task done in (s): " << timer.elapsed();
-}
-return EXIT_SUCCESS;
+  return EXIT_SUCCESS;
 }

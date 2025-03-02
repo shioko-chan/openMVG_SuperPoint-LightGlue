@@ -130,9 +130,10 @@ macro(AutodetectHostArchitecture)
          # 4E | Skylake Client
          # 3C | Broadwell (likely a bug in the SDE)
          # 3C | Haswell
-         if(_cpu_model EQUAL 183)
-            set(TARGET_ARCHITECTURE "raptor-lake")
-         elseif(_cpu_model EQUAL 142 OR _cpu_model EQUAL 158) # 8E, 9E
+         #if(_cpu_model EQUAL 183)
+         #   set(TARGET_ARCHITECTURE "raptor-lake")
+         #else
+         if(_cpu_model EQUAL 142 OR _cpu_model EQUAL 158) # 8E, 9E
             set(TARGET_ARCHITECTURE "kaby-lake")
          elseif(_cpu_model EQUAL 106)
             set(TARGET_ARCHITECTURE "icelake")

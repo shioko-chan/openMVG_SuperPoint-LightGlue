@@ -54,6 +54,7 @@ target_link_libraries(openMVG_main_ComputeFeatures
     openMVG_sfm
     ${CUDA_LIBRARIES}
     nvinfer
+    nvonnxparser
     CUDA::cudart
     ${OpenCV_LIBS}
     ${STLPLUS_LIBRARY}
