@@ -6,8 +6,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-#ifndef OPENMVG_MATCHING_MATCHER_BRUTE_FORCE_HPP
-#define OPENMVG_MATCHING_MATCHER_BRUTE_FORCE_HPP
+#ifndef OPENMVG_MATCHING_MATCHER_LIGHT_GLUE_HPP
+#define OPENMVG_MATCHING_MATCHER_LIGHT_GLUE_HPP
 
 #include <algorithm>
 #include <memory>
@@ -24,7 +24,6 @@ namespace openMVG
 {
   namespace matching
   {
-
     // By default compute square(L2 distance).
     template <typename Scalar = float, typename Metric = L2<Scalar>>
     class ArrayMatcherBruteForce : public ArrayMatcher<Scalar, Metric>
@@ -44,10 +43,7 @@ namespace openMVG
        *
        * \return True if success.
        */
-      bool Build(
-          const Scalar *dataset,
-          int nbRows,
-          int dimension) override
+      bool Build(const Scalar *dataset, int nbRows, int dimension) override
       {
         if (nbRows < 1)
         {
@@ -197,4 +193,4 @@ namespace openMVG
   } // namespace matching
 } // namespace openMVG
 
-#endif // OPENMVG_MATCHING_MATCHER_BRUTE_FORCE_HPP
+#endif // OPENMVG_MATCHING_MATCHER_LIGHT_GLUE_HPP

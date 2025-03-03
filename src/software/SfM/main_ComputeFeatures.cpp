@@ -44,43 +44,114 @@
 #include <opencv2/core/eigen.hpp>
 
 const size_t IMAGE_HEIGHT_LIM = 768, IMAGE_WIDTH_LIM = 960;
+
 class SuperPoint_Image_describer : public openMVG::features::Image_describer
 {
 private:
+  class GPUAllocator
+  {
+  private:
+    cudaStream_t stream;
+
+  public:
+    void *ptr{nullptr};
+    uint64_t current_size{0};
+
+    GPUAllocator() = default;
+    GPUAllocator(cudaStream_t stream) : stream(stream) {}
+    ~GPUAllocator()
+    {
+      cudaFree(this->ptr);
+    }
+    void *reallocate(uint64_t desire_size)
+    {
+      cudaError_t status = cudaSuccess;
+      if (desire_size > this->current_size)
+      {
+        if (this->ptr)
+        {
+          status = cudaFreeAsync(this->ptr, this->stream);
+          if (status != cudaSuccess)
+          {
+            OPENMVG_LOG_ERROR << "Failed to free memory" << cudaGetErrorString(status);
+          }
+          this->ptr = nullptr;
+          this->current_size = 0;
+        }
+
+        if ((status = cudaMallocAsync(&this->ptr, desire_size, this->stream)) == cudaSuccess)
+        {
+          this->current_size = desire_size;
+        }
+        else
+        {
+          OPENMVG_LOG_ERROR << "Failed to allocate memory" << cudaGetErrorString(status);
+        }
+      }
+      return this->ptr;
+    }
+  };
+  class OutputAllocator : public nvinfer1::IOutputAllocator
+  {
+  public:
+    GPUAllocator allocator;
+    nvinfer1::Dims output_dims{};
+
+    OutputAllocator() = default;
+    OutputAllocator(cudaStream_t stream)
+    {
+      this->allocator = GPUAllocator(stream);
+    }
+
+    void *reallocateOutput(
+        char const *tensor_name, void *current_memory,
+        uint64_t desire_size, uint64_t alignment) noexcept override
+    {
+      return this->allocator.reallocate(desire_size);
+    }
+
+    void notifyShape(char const *tensor_name, nvinfer1::Dims const &dims) noexcept override
+    {
+      output_dims = dims;
+    }
+  };
   std::unique_ptr<nvinfer1::IExecutionContext> context;
-  cudaStream_t stream;
-
   std::vector<float> kp_h, score_h, desc_h;
-
-  float *input = nullptr, *kp = nullptr, *score = nullptr, *desc = nullptr;
-  size_t input_size, kp_size, score_size, desc_size;
-
+  GPUAllocator input;
+  OutputAllocator kp, score, desc;
   Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic> img_input;
-
+  cudaStream_t stream;
   const char *input_name = "image";
   struct
   {
-    const char *keypoints = "keypoints";
-    const char *scores = "scores";
-    const char *descriptors = "descriptors";
+    const char *kp = "keypoints";
+    const char *score = "scores";
+    const char *desc = "descriptors";
   } output_names;
 
 public:
   SuperPoint_Image_describer(std::unique_ptr<nvinfer1::IExecutionContext> context) : Image_describer(), context(std::move(context))
   {
     cudaStreamCreate(&stream);
+
+    this->input = GPUAllocator(stream);
+    this->kp = OutputAllocator(stream);
+    this->score = OutputAllocator(stream);
+    this->desc = OutputAllocator(stream);
+
+    this->context->setOptimizationProfileAsync(0, this->stream);
+
+    this->context->setOutputAllocator(this->output_names.kp, &this->kp);
+    this->context->setOutputAllocator(this->output_names.score, &this->score);
+    this->context->setOutputAllocator(this->output_names.desc, &this->desc);
+
+    this->context->setOutputTensorAddress(this->output_names.kp, nullptr);
+    this->context->setOutputTensorAddress(this->output_names.score, nullptr);
+    this->context->setOutputTensorAddress(this->output_names.desc, nullptr);
   }
 
   ~SuperPoint_Image_describer()
   {
-    if (this->input)
-      cudaFree(this->input);
-    if (this->kp)
-      cudaFree(this->kp);
-    if (this->score)
-      cudaFree(this->score);
-    if (this->desc)
-      cudaFree(this->desc);
     cudaStreamDestroy(stream);
   }
 
@@ -89,7 +160,7 @@ public:
     return true;
   }
 
-  inline size_t units_size(nvinfer1::Dims &&dims)
+  inline size_t units_size(nvinfer1::Dims &dims)
   {
     size_t output_size = 1;
     for (int j = 0; j < dims.nbDims; ++j)
@@ -99,7 +170,7 @@ public:
     return output_size;
   }
 
-  void print_dims(nvinfer1::Dims &&dims, const char *name)
+  const char *print_dims(nvinfer1::Dims &&dims, const char *name)
   {
     char *buffer = new char[256];
     std::sprintf(buffer, "%s has shape: [", name);
@@ -108,26 +179,7 @@ public:
       std::sprintf(buffer, "%s%ld, ", buffer, dims.d[j]);
     }
     std::sprintf(buffer, "%s]", buffer);
-    OPENMVG_LOG_INFO << buffer;
-  }
-
-  void check_size(size_t desire_size, void **current_buffer, size_t &current_size)
-  {
-    if (*current_buffer == nullptr || current_size < desire_size)
-    {
-      if (current_buffer)
-      {
-        if (cudaFreeAsync(*current_buffer, this->stream) != cudaSuccess)
-        {
-          OPENMVG_LOG_ERROR << "Failed to free memory on device";
-        }
-      }
-      if (cudaMallocAsync(current_buffer, desire_size, this->stream) != cudaSuccess)
-      {
-        OPENMVG_LOG_ERROR << "Failed to allocate memory on device";
-      }
-      current_size = desire_size;
-    }
+    return buffer;
   }
 
   void check_size(size_t desire_size, std::vector<float> &current_buffer)
@@ -146,52 +198,31 @@ public:
 
   std::unique_ptr<openMVG::features::Regions> Describe(const cv::Mat &img_input, const size_t factor)
   {
-    if (img_input.cols > IMAGE_WIDTH_LIM || img_input.rows > IMAGE_HEIGHT_LIM)
-    {
-      OPENMVG_LOG_WARNING << "Image size exceeds the limit of 960x768";
-      return std::make_unique<openMVG::features::SuperPoint_Regions>();
-    }
+    const int image_size = img_input.cols * img_input.rows * sizeof(float);
 
-    const int image_pixel_size = img_input.cols * img_input.rows;
-    const int image_size = image_pixel_size * sizeof(float);
-
-    this->check_size(image_size, reinterpret_cast<void **>(&this->input), this->input_size);
-    cudaMemcpyAsync(this->input, img_input.data, this->input_size, cudaMemcpyHostToDevice, this->stream);
-
-    OPENMVG_LOG_INFO << "Input tensor prepared with shape: [" << img_input.rows << ", " << img_input.cols << "]";
+    cudaMemcpyAsync(this->input.reallocate(image_size), img_input.data, image_size, cudaMemcpyHostToDevice, this->stream);
 
     this->context->setInputShape(this->input_name, nvinfer1::Dims4(1, 1, img_input.rows, img_input.cols));
-    this->context->setInputTensorAddress(this->input_name, reinterpret_cast<void *>(this->input));
+    this->context->setInputTensorAddress(this->input_name, this->input.ptr);
 
-    size_t kp_units = this->units_size(this->context->getTensorShape(this->output_names.keypoints));
-    size_t score_units = this->units_size(this->context->getTensorShape(this->output_names.scores));
-    size_t desc_units = this->units_size(this->context->getTensorShape(this->output_names.descriptors));
+    if (!this->context->enqueueV3(this->stream))
+    {
+      OPENMVG_LOG_ERROR << "Failed to enqueue inference";
+    }
 
-    this->print_dims(this->context->getTensorShape(this->output_names.keypoints), this->output_names.keypoints);
-    this->print_dims(this->context->getTensorShape(this->output_names.scores), this->output_names.scores);
-    this->print_dims(this->context->getTensorShape(this->output_names.descriptors), this->output_names.descriptors);
-
-    this->check_size(kp_units * sizeof(float), reinterpret_cast<void **>(&this->kp), this->kp_size);
-    this->check_size(score_size * sizeof(float), reinterpret_cast<void **>(&this->score), this->score_size);
-    this->check_size(desc_size * sizeof(float), reinterpret_cast<void **>(&this->desc), this->desc_size);
-
-    this->context->setOutputTensorAddress(this->output_names.keypoints, reinterpret_cast<void *>(this->kp));
-    this->context->setOutputTensorAddress(this->output_names.scores, reinterpret_cast<void *>(this->score));
-    this->context->setOutputTensorAddress(this->output_names.descriptors, reinterpret_cast<void *>(this->desc));
-
-    this->context->enqueueV3(this->stream);
+    const size_t kp_units = this->units_size(this->kp.output_dims);
+    const size_t score_units = this->units_size(this->score.output_dims);
+    const size_t desc_units = this->units_size(this->desc.output_dims);
 
     this->check_size(kp_units, this->kp_h);
     this->check_size(score_units, this->score_h);
     this->check_size(desc_units, this->desc_h);
 
-    cudaMemcpyAsync(this->kp_h.data(), this->kp, kp_units * sizeof(float), cudaMemcpyDeviceToHost);
-    cudaMemcpyAsync(this->score_h.data(), this->score, score_units * sizeof(float), cudaMemcpyDeviceToHost);
-    cudaMemcpyAsync(this->desc_h.data(), this->desc, desc_units * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpyAsync(this->kp_h.data(), this->kp.allocator.ptr, kp_units * sizeof(float), cudaMemcpyDeviceToHost, this->stream);
+    cudaMemcpyAsync(this->score_h.data(), this->score.allocator.ptr, score_units * sizeof(float), cudaMemcpyDeviceToHost, this->stream);
+    cudaMemcpyAsync(this->desc_h.data(), this->desc.allocator.ptr, desc_units * sizeof(float), cudaMemcpyDeviceToHost, this->stream);
 
-    cudaStreamSynchronize(stream);
-
-    OPENMVG_LOG_INFO << "Inference completed successfully";
+    cudaStreamSynchronize(this->stream);
 
     const int num_keypoints = kp_units / 2;
 
@@ -205,7 +236,7 @@ public:
     regions->Features().reserve(num_keypoints);
     regions->Descriptors().reserve(num_keypoints);
 
-    OPENMVG_LOG_INFO << "Number of keypoints detected: " << num_keypoints;
+    // OPENMVG_LOG_INFO << "Number of keypoints detected: " << num_keypoints;
 
     for (int i = 0; i < num_keypoints; ++i)
     {
@@ -219,13 +250,10 @@ public:
       regions->Descriptors().push_back(descriptor);
     }
 
-    OPENMVG_LOG_INFO << "Feature extraction completed";
-
     return regions;
   }
 
-  std::unique_ptr<openMVG::features::Regions>
-  Allocate() const override
+  std::unique_ptr<openMVG::features::Regions> Allocate() const override
   {
     return std::unique_ptr<openMVG::features::SuperPoint_Regions>(new openMVG::features::SuperPoint_Regions);
   }
@@ -268,7 +296,7 @@ private:
       }
     }
   };
-  Logger logger;
+  Logger logger{nvinfer1::ILogger::Severity::kWARNING};
 
   std::unique_ptr<nvinfer1::ICudaEngine> engine;
 
@@ -277,6 +305,11 @@ public:
 
   NVInferEnv(ImageSize max_size, ImageSize min_size, ImageSize average_size, const std::string &model_path = "/models/superpoint.onnx") : logger(nvinfer1::ILogger::Severity::kINFO)
   {
+    OPENMVG_LOG_INFO << "Creating TensorRT environment";
+    OPENMVG_LOG_INFO << "MAX Size: " << max_size.first << "x" << max_size.second;
+    OPENMVG_LOG_INFO << "MIN Size: " << min_size.first << "x" << min_size.second;
+    OPENMVG_LOG_INFO << "AVG Size: " << average_size.first << "x" << average_size.second;
+
     nvinfer1::IBuilder *builder = nvinfer1::createInferBuilder(logger);
     nvinfer1::INetworkDefinition *network = builder->createNetworkV2(1U << static_cast<unsigned int>(nvinfer1::NetworkDefinitionCreationFlag::kSTRONGLY_TYPED));
 
@@ -312,7 +345,7 @@ public:
     {
       OPENMVG_LOG_INFO << "Optimization profile added with index: " << profile_idx;
     }
-    config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, 4 * (static_cast<size_t>(1) << 30)); // 4GB
+    config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, 1 * (static_cast<size_t>(1) << 30)); // 1GB
 
     this->engine = std::unique_ptr<nvinfer1::ICudaEngine>(builder->buildEngineWithConfig(*network, *config));
   }
@@ -362,10 +395,6 @@ int main(int argc, char **argv)
   std::string sOutDir = "";
   bool bUpRight = false;
   bool bForce = false;
-  std::string sFeaturePreset = "";
-#ifdef OPENMVG_USE_OPENMP
-  int iNumThreads = 0;
-#endif
 
   // required
   cmd.add(make_option('i', sSfM_Data_Filename, "input_file"));
@@ -373,11 +402,6 @@ int main(int argc, char **argv)
   // Optional
   cmd.add(make_option('u', bUpRight, "upright"));
   cmd.add(make_option('f', bForce, "force"));
-  cmd.add(make_option('p', sFeaturePreset, "describerPreset"));
-
-#ifdef OPENMVG_USE_OPENMP
-  cmd.add(make_option('n', iNumThreads, "numThreads"));
-#endif
 
   try
   {
@@ -414,12 +438,7 @@ int main(int argc, char **argv)
       << "--input_file " << sSfM_Data_Filename << "\n"
       << "--outdir " << sOutDir << "\n"
       << "--upright " << bUpRight << "\n"
-      << "--describerPreset " << (sFeaturePreset.empty() ? "NORMAL" : sFeaturePreset) << "\n"
-      << "--force " << bForce << "\n"
-#ifdef OPENMVG_USE_OPENMP
-      << "--numThreads " << iNumThreads << "\n"
-#endif
-      ;
+      << "--force " << bForce << "\n";
 
   if (sOutDir.empty())
   {
@@ -466,17 +485,6 @@ int main(int argc, char **argv)
 
     // Use a boolean to track if we must stop feature extraction
     std::atomic<bool> preemptive_exit(false);
-
-    const unsigned int nb_max_thread = omp_get_max_threads();
-
-    if (iNumThreads > 0)
-    {
-      omp_set_num_threads(iNumThreads);
-    }
-    else
-    {
-      omp_set_num_threads(nb_max_thread);
-    }
 
     std::vector<NVInferEnv::ImageSize> image_sizes;
     std::vector<size_t> factors;
@@ -527,6 +535,9 @@ int main(int argc, char **argv)
     NVInferEnv env(max_size, min_size, avg_size);
 
 #ifdef OPENMVG_USE_OPENMP
+    int thread_count = std::min(omp_get_max_threads(), 20);
+    omp_set_num_threads(thread_count);
+    OPENMVG_LOG_INFO << "Using " << thread_count << " threads";
 #pragma omp parallel
     {
 #endif
