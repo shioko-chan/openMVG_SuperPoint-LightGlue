@@ -5,7 +5,7 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-CMAKE_MINIMUM_REQUIRED(VERSION 3.9)
+CMAKE_MINIMUM_REQUIRED(VERSION 3.20)
 
 project(openMVG C CXX)
 
@@ -136,18 +136,18 @@ if (UNIX AND NOT OpenMVG_BUILD_COVERAGE)
 endif ()
 
 # ==============================================================================
-# Check C++11 compiler support
+# Check C++17 compiler support
 # ==============================================================================
-include(CXX11)
-check_for_cxx11_compiler(CXX11_COMPILER)
-# If a C++11 compiler is available, then set the appropriate flags
-if (CXX11_COMPILER)
-  set(CMAKE_CXX_STANDARD 14)
+include(CXX17)
+check_for_cxx17_compiler(CXX17_COMPILER)
+# If a C++17 compiler is available, then set the appropriate flags
+if (CXX17_COMPILER)
+  set(CMAKE_CXX_STANDARD 17)
   set(CMAKE_CXX_STANDARD_REQUIRED ON)
   set(CMAKE_CXX_EXTENSIONS OFF)
-else (CXX11_COMPILER)
-  message(FATAL_ERROR "A CXX11 compiler is required.")
-endif (CXX11_COMPILER)
+else (CXX17_COMPILER)
+  message(FATAL_ERROR "A CXX17 compiler is required.")
+endif (CXX17_COMPILER)
 
 # ==============================================================================
 # OpenMP detection

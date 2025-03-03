@@ -15,7 +15,7 @@ list(REMOVE_ITEM numeric_files_cpp ${REMOVEFILESUNITTEST})
 add_library(openMVG_numeric
   ${numeric_files_header}
   ${numeric_files_cpp})
-target_compile_features(openMVG_numeric INTERFACE ${CXX11_FEATURES})
+target_compile_features(openMVG_numeric INTERFACE ${CXX17_FEATURES})
 if (CMAKE_CXX_FLAGS)
   string(REPLACE " " ";" REPLACED_CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS})
   target_compile_options(openMVG_numeric INTERFACE ${REPLACED_CMAKE_CXX_FLAGS})

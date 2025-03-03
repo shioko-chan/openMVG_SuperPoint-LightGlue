@@ -10,7 +10,7 @@
 #include <cereal/archives/json.hpp>
 
 #include "openMVG/features/akaze/image_describer_akaze_io.hpp"
-
+#include "openMVG/exif/exif_IO_EasyExif.hpp"
 #include "openMVG/features/sift/SIFT_Anatomy_Image_Describer_io.hpp"
 #include "openMVG/image/image_io.hpp"
 #include "openMVG/features/regions_factory_io.hpp"
@@ -31,6 +31,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <string>
+#include <algorithm>
 
 #ifdef OPENMVG_USE_OPENMP
 #include <omp.h>
@@ -42,6 +43,7 @@
 #include <opencv2/opencv.hpp>
 #include <opencv2/core/eigen.hpp>
 
+const size_t IMAGE_HEIGHT_LIM = 768, IMAGE_WIDTH_LIM = 960;
 class SuperPoint_Image_describer : public openMVG::features::Image_describer
 {
 private:
@@ -49,6 +51,7 @@ private:
   cudaStream_t stream;
 
   std::vector<float> kp_h, score_h, desc_h;
+
   float *input = nullptr, *kp = nullptr, *score = nullptr, *desc = nullptr;
   size_t input_size, kp_size, score_size, desc_size;
 
@@ -135,19 +138,26 @@ public:
     }
   }
 
-  std::unique_ptr<openMVG::features::Regions> Describe(const openMVG::image::Image<unsigned char> &image, const openMVG::image::Image<unsigned char> *mask = nullptr) override
+  std::unique_ptr<openMVG::features::Regions> Describe(const openMVG::image::Image<unsigned char> &img_input, const openMVG::image::Image<unsigned char> *mask = nullptr) override
   {
-    if (img_input.rows() != image.Height() || img_input.cols() != image.Width())
-    {
-      OPENMVG_LOG_INFO << "!!!!!Resizing buffer to: [" << image.Height() << ", " << image.Width() << "]";
-      img_input.resize(image.Height(), image.Width());
-    }
-    img_input = image.cast<float>();
-    img_input /= 255.0f;
-    const size_t input_size = img_input.size() * sizeof(float);
+    OPENMVG_LOG_ERROR << "Not implemented";
+    return std::make_unique<openMVG::features::SuperPoint_Regions>();
+  }
 
-    this->check_size(input_size, reinterpret_cast<void **>(&this->input), this->input_size);
-    cudaMemcpyAsync(this->input, img_input.data(), input_size, cudaMemcpyHostToDevice, this->stream);
+  std::unique_ptr<openMVG::features::Regions> Describe(const cv::Mat &img_input, const size_t factor)
+  {
+    if (img_input.cols > IMAGE_WIDTH_LIM || img_input.rows > IMAGE_HEIGHT_LIM)
+    {
+      OPENMVG_LOG_WARNING << "Image size exceeds the limit of 960x768";
+      return std::make_unique<openMVG::features::SuperPoint_Regions>();
+    }
+
+    const int image_pixel_size = img_input.cols * img_input.rows;
+    const int image_size = image_pixel_size * sizeof(float);
+
+    this->check_size(image_size, reinterpret_cast<void **>(&this->input), this->input_size);
+    assert(this->input && this->input_size >= image_size, "Input buffer not allocated properly");
+    cudaMemcpyAsync(this->input, img_input.data, this->input_size, cudaMemcpyHostToDevice, this->stream);
 
     OPENMVG_LOG_INFO << "Input tensor prepared with shape: [" << img_input.rows() << ", " << img_input.cols() << "]";
 
@@ -163,8 +173,11 @@ public:
     this->print_dims(this->context->getTensorShape(this->output_names.descriptors), this->output_names.descriptors);
 
     this->check_size(kp_units * sizeof(float), reinterpret_cast<void **>(&this->kp), this->kp_size);
+    assert(this->kp && this->kp_size >= kp_units * sizeof(float), "Keypoints buffer not allocated properly");
     this->check_size(score_size * sizeof(float), reinterpret_cast<void **>(&this->score), this->score_size);
+    assert(this->score && this->score_size >= score_units * sizeof(float), "Scores buffer not allocated properly");
     this->check_size(desc_size * sizeof(float), reinterpret_cast<void **>(&this->desc), this->desc_size);
+    assert(this->desc && this->desc_size >= desc_units * sizeof(float), "Descriptors buffer not allocated properly");
 
     this->context->setOutputTensorAddress(this->output_names.keypoints, reinterpret_cast<void *>(this->kp));
     this->context->setOutputTensorAddress(this->output_names.scores, reinterpret_cast<void *>(this->score));
@@ -202,7 +215,7 @@ public:
     {
       const float x = this->kp_h[i * 2];
       const float y = this->kp_h[i * 2 + 1];
-      regions->Features().emplace_back(x, y);
+      regions->Features().emplace_back(x * factor, y * factor);
 
       openMVG::features::SuperPoint_Regions::DescriptorT descriptor;
       const float *desc_start = this->desc_h.data() + i * 256;
@@ -264,7 +277,9 @@ private:
   std::unique_ptr<nvinfer1::ICudaEngine> engine;
 
 public:
-  NVInferEnv(const std::string &model_path = "/models/superpoint.onnx") : logger(nvinfer1::ILogger::Severity::kINFO)
+  using ImageSize = std::pair<size_t, size_t>; // width, height
+
+  NVInferEnv(ImageSize max_size, ImageSize min_size, ImageSize average_size, const std::string &model_path = "/models/superpoint.onnx") : logger(nvinfer1::ILogger::Severity::kINFO)
   {
     nvinfer1::IBuilder *builder = nvinfer1::createInferBuilder(logger);
     nvinfer1::INetworkDefinition *network = builder->createNetworkV2(1U << static_cast<unsigned int>(nvinfer1::NetworkDefinitionCreationFlag::kSTRONGLY_TYPED));
@@ -279,18 +294,24 @@ public:
     nvinfer1::IBuilderConfig *config = builder->createBuilderConfig();
     nvinfer1::IOptimizationProfile *profile = builder->createOptimizationProfile();
 
-    if (
-        !profile->setDimensions("image", nvinfer1::OptProfileSelector::kMIN, nvinfer1::Dims4(1, 1, 64, 64)) ||
-        !profile->setDimensions("image", nvinfer1::OptProfileSelector::kOPT, nvinfer1::Dims4(1, 1, 456, 684)) ||
-        !profile->setDimensions("image", nvinfer1::OptProfileSelector::kMAX, nvinfer1::Dims4(1, 1, 3648, 5472)))
+    auto &[avg_width, avg_height] = average_size;
+    auto &[min_width, min_height] = min_size;
+    auto &[max_width, max_height] = max_size;
+
+    nvinfer1::Dims4 input_dims = nvinfer1::Dims4(1, 1, image_height, image_width);
+    if (!profile->setDimensions("image", nvinfer1::OptProfileSelector::kMIN, nvinfer1::Dims4(1, 1, min_height, min_width)) ||
+        !profile->setDimensions("image", nvinfer1::OptProfileSelector::kOPT, nvinfer1::Dims4(1, 1, avg_height, avg_width)) ||
+        !profile->setDimensions("image", nvinfer1::OptProfileSelector::kMAX, nvinfer1::Dims4(1, 1, max_height, max_width)))
     {
       OPENMVG_LOG_ERROR << "Failed to set optimization profile dimensions";
+      return;
     }
 
     const int32_t profile_idx = config->addOptimizationProfile(profile);
     if (profile_idx == -1)
     {
       OPENMVG_LOG_ERROR << "Failed to add optimization profile";
+      return;
     }
     else
     {
@@ -301,9 +322,13 @@ public:
     this->engine = std::unique_ptr<nvinfer1::ICudaEngine>(builder->buildEngineWithConfig(*network, *config));
   }
 
-  std::unique_ptr<SuperPoint_Image_describer> create_describer()
+  std::unique_ptr<SuperPoint_Image_describer> create_describer(ImageSize image_size)
   {
-    return std::unique_ptr<SuperPoint_Image_describer>(new SuperPoint_Image_describer(std::unique_ptr<nvinfer1::IExecutionContext>(this->engine->createExecutionContext())));
+    auto &[width, height] = image_size;
+    return std::unique_ptr<SuperPoint_Image_describer>(
+        new SuperPoint_Image_describer(
+            std::unique_ptr<nvinfer1::IExecutionContext>(
+                this->engine->createExecutionContext())));
   }
 };
 
@@ -319,6 +344,18 @@ openMVG::features::EDESCRIBER_PRESET stringToEnum(const std::string &sPreset)
   else
     preset = openMVG::features::EDESCRIBER_PRESET(-1);
   return preset;
+}
+
+bool getImageSize(const std::string &filename, size_t &width, size_t &height)
+{
+  openMVG::exif::Exif_IO_EasyExif exifReader;
+  if (exifReader.open(filename) && exifReader.doesHaveExifInfo())
+  {
+    exifReader.getHeight(&height);
+    exifReader.getWidth(&width);
+    return true;
+  }
+  return false;
 }
 
 /// - Compute view image description (feature & descriptor extraction)
@@ -436,8 +473,6 @@ int main(int argc, char **argv)
     // Use a boolean to track if we must stop feature extraction
     std::atomic<bool> preemptive_exit(false);
 
-    NVInferEnv env;
-
     const unsigned int nb_max_thread = omp_get_max_threads();
 
     if (iNumThreads > 0)
@@ -449,10 +484,62 @@ int main(int argc, char **argv)
       omp_set_num_threads(nb_max_thread);
     }
 
+    std::vector<NVInferEnv::ImageSize> image_sizes;
+    std::vector<size_t> factors;
+    std::for_each(sfm_data.views.begin(), sfm_data.views.end(),
+                  [&image_sizes, &factors](const openMVG::sfm::Views::value_type &kv)
+                  {
+                    const std::string filename = stlplus::create_filespec(sfm_data.s_root_path, kv.second.get()->s_Img_path);
+                    size_t width, height;
+                    if (!getImageSize(filename, width, height))
+                    {
+                      OPENMVG_LOG_WARNING << "Failed to read image size from: " << filename;
+                      image_sizes.emplace_back(-1, -1);
+                      factors.push_back(0);
+                      return;
+                    }
+                    for (size_t i = 1; i <= width; ++i)
+                    {
+                      if (width / i <= IMAGE_WIDTH_LIM && height / i <= IMAGE_HEIGHT_LIM)
+                      {
+                        image_sizes.emplace_back(width / i, height / i);
+                        factors.push_back(i);
+                        return;
+                      }
+                    }
+                    OPENMVG_LOG_WARNING << "Failed to find a suitable image size for: " << filename;
+                    image_sizes.emplace_back(-1, -1);
+                    factors.push_back(0);
+                  });
+
+    std::unordered_map<NVInferEnv::ImageSize, size_t> image_size_count;
+    NVInferEnv::ImageSize min_size{IMAGE_WIDTH_LIM, IMAGE_HEIGHT_LIM}, max_size{0, 0};
+
+    std::for_each(image_sizes.begin(), image_sizes.end(), [&min_size, &max_size, &image_size_count](const auto &image_size)
+                  {
+      auto &[w, h] = image_size;
+      auto &[min_w, min_h] = min_size;
+      auto &[max_w, max_h] = max_size;
+
+      min_w = std::min(min_w, w);
+      min_h = std::min(min_h, h);
+      max_w = std::max(max_w, w);
+      max_h = std::max(max_h, h);
+      image_size_count[image_size]++; });
+
+    auto [avg_size, _] = *std::max_element(image_size_count.begin(), image_size_count.end(), [](const auto &lhs, const auto &rhs)
+                                           { return lhs.second < rhs.second; });
+
+    NVInferEnv env(max_size, min_size, avg_size);
+
+#ifdef OPENMVG_USE_OPENMP
 #pragma omp parallel
     {
-      std::unique_ptr<Image_describer> image_describer = env.create_describer();
+#endif
+      std::unique_ptr<SuperPoint_Image_describer> image_describer = env.create_describer();
+#ifdef OPENMVG_USE_OPENMP
 #pragma omp for schedule(dynamic) private(imageGray)
+#endif
       for (int i = 0; i < static_cast<int>(sfm_data.views.size()); ++i)
       {
         openMVG::sfm::Views::const_iterator iterViews = sfm_data.views.begin();
@@ -466,11 +553,24 @@ int main(int argc, char **argv)
         // If features or descriptors file are missing, compute them
         if (!preemptive_exit && (bForce || !stlplus::file_exists(sFeat) || !stlplus::file_exists(sDesc)))
         {
+          std::vector<NVInferEnv::ImageSize>::const_iterator image_size = image_sizes.begin();
+          std::vector<size_t>::const_iterator factor = factors.begin();
+          std::advance(image_size, i);
+          std::advance(factor, i);
+
+          if (*factor == 0)
+            continue;
+
           if (!ReadImage(sView_filename.c_str(), &imageGray))
             continue;
 
+          cv::Mat cv_image, cv_image_resized;
+          cv::eigen2cv(imageGray.GetMat(), cv_image);
+          cv::resize(cv_image, cv_image_resized, cv::Size(image_size->first, image_size->second), 0, 0, cv::INTER_AREA);
+          cv_image_resized.convertTo(cv_image_resized, CV_32F1C, 1.0 / 255.0);
+
           // Compute features and descriptors and export them to files
-          auto regions = image_describer->Describe(imageGray);
+          auto regions = image_describer->Describe(cv_image_resized, *factor);
           if (regions && !image_describer->Save(regions.get(), sFeat, sDesc))
           {
             OPENMVG_LOG_ERROR
@@ -482,7 +582,9 @@ int main(int argc, char **argv)
         }
         ++my_progress_bar;
       }
+#ifdef OPENMVG_USE_OPENMP
     }
+#endif
     OPENMVG_LOG_INFO << "Task done in (s): " << timer.elapsed();
   }
   return EXIT_SUCCESS;

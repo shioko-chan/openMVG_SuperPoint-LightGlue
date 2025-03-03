@@ -52,6 +52,7 @@ target_link_libraries(openMVG_main_ComputeFeatures
     openMVG_features
     openMVG_multiview
     openMVG_sfm
+    openMVG_exif
     ${CUDA_LIBRARIES}
     nvinfer
     nvonnxparser

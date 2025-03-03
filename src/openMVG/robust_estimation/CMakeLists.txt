@@ -9,7 +9,7 @@ UNIT_TEST(openMVG robust_estimator_ACRansac "openMVG_testing")
 add_library(openMVG_robust_estimation
   gms_filter.hpp gms_filter.cpp
 )
-target_compile_features(openMVG_robust_estimation INTERFACE ${CXX11_FEATURES})
+target_compile_features(openMVG_robust_estimation INTERFACE ${CXX17_FEATURES})
 target_include_directories(openMVG_robust_estimation
   PUBLIC
     $<INSTALL_INTERFACE:include>
