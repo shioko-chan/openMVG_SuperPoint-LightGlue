@@ -156,12 +156,11 @@ public:
     const int image_size = image_pixel_size * sizeof(float);
 
     this->check_size(image_size, reinterpret_cast<void **>(&this->input), this->input_size);
-    assert(this->input && this->input_size >= image_size, "Input buffer not allocated properly");
     cudaMemcpyAsync(this->input, img_input.data, this->input_size, cudaMemcpyHostToDevice, this->stream);
 
-    OPENMVG_LOG_INFO << "Input tensor prepared with shape: [" << img_input.rows() << ", " << img_input.cols() << "]";
+    OPENMVG_LOG_INFO << "Input tensor prepared with shape: [" << img_input.rows << ", " << img_input.cols << "]";
 
-    this->context->setInputShape(this->input_name, nvinfer1::Dims4(1, 1, img_input.rows(), img_input.cols()));
+    this->context->setInputShape(this->input_name, nvinfer1::Dims4(1, 1, img_input.rows, img_input.cols));
     this->context->setInputTensorAddress(this->input_name, reinterpret_cast<void *>(this->input));
 
     size_t kp_units = this->units_size(this->context->getTensorShape(this->output_names.keypoints));
@@ -173,11 +172,8 @@ public:
     this->print_dims(this->context->getTensorShape(this->output_names.descriptors), this->output_names.descriptors);
 
     this->check_size(kp_units * sizeof(float), reinterpret_cast<void **>(&this->kp), this->kp_size);
-    assert(this->kp && this->kp_size >= kp_units * sizeof(float), "Keypoints buffer not allocated properly");
     this->check_size(score_size * sizeof(float), reinterpret_cast<void **>(&this->score), this->score_size);
-    assert(this->score && this->score_size >= score_units * sizeof(float), "Scores buffer not allocated properly");
     this->check_size(desc_size * sizeof(float), reinterpret_cast<void **>(&this->desc), this->desc_size);
-    assert(this->desc && this->desc_size >= desc_units * sizeof(float), "Descriptors buffer not allocated properly");
 
     this->context->setOutputTensorAddress(this->output_names.keypoints, reinterpret_cast<void *>(this->kp));
     this->context->setOutputTensorAddress(this->output_names.scores, reinterpret_cast<void *>(this->score));
@@ -298,7 +294,6 @@ public:
     auto &[min_width, min_height] = min_size;
     auto &[max_width, max_height] = max_size;
 
-    nvinfer1::Dims4 input_dims = nvinfer1::Dims4(1, 1, image_height, image_width);
     if (!profile->setDimensions("image", nvinfer1::OptProfileSelector::kMIN, nvinfer1::Dims4(1, 1, min_height, min_width)) ||
         !profile->setDimensions("image", nvinfer1::OptProfileSelector::kOPT, nvinfer1::Dims4(1, 1, avg_height, avg_width)) ||
         !profile->setDimensions("image", nvinfer1::OptProfileSelector::kMAX, nvinfer1::Dims4(1, 1, max_height, max_width)))
@@ -322,9 +317,8 @@ public:
     this->engine = std::unique_ptr<nvinfer1::ICudaEngine>(builder->buildEngineWithConfig(*network, *config));
   }
 
-  std::unique_ptr<SuperPoint_Image_describer> create_describer(ImageSize image_size)
+  std::unique_ptr<SuperPoint_Image_describer> create_describer()
   {
-    auto &[width, height] = image_size;
     return std::unique_ptr<SuperPoint_Image_describer>(
         new SuperPoint_Image_describer(
             std::unique_ptr<nvinfer1::IExecutionContext>(
@@ -351,8 +345,8 @@ bool getImageSize(const std::string &filename, size_t &width, size_t &height)
   openMVG::exif::Exif_IO_EasyExif exifReader;
   if (exifReader.open(filename) && exifReader.doesHaveExifInfo())
   {
-    exifReader.getHeight(&height);
-    exifReader.getWidth(&width);
+    height = exifReader.getHeight();
+    width = exifReader.getWidth();
     return true;
   }
   return false;
@@ -487,7 +481,7 @@ int main(int argc, char **argv)
     std::vector<NVInferEnv::ImageSize> image_sizes;
     std::vector<size_t> factors;
     std::for_each(sfm_data.views.begin(), sfm_data.views.end(),
-                  [&image_sizes, &factors](const openMVG::sfm::Views::value_type &kv)
+                  [&image_sizes, &factors, &sfm_data](const openMVG::sfm::Views::value_type &kv)
                   {
                     const std::string filename = stlplus::create_filespec(sfm_data.s_root_path, kv.second.get()->s_Img_path);
                     size_t width, height;
@@ -567,7 +561,7 @@ int main(int argc, char **argv)
           cv::Mat cv_image, cv_image_resized;
           cv::eigen2cv(imageGray.GetMat(), cv_image);
           cv::resize(cv_image, cv_image_resized, cv::Size(image_size->first, image_size->second), 0, 0, cv::INTER_AREA);
-          cv_image_resized.convertTo(cv_image_resized, CV_32F1C, 1.0 / 255.0);
+          cv_image_resized.convertTo(cv_image_resized, CV_32FC1, 1.0 / 255.0);
 
           // Compute features and descriptors and export them to files
           auto regions = image_describer->Describe(cv_image_resized, *factor);
