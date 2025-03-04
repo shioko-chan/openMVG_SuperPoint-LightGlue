@@ -48,6 +48,47 @@ const size_t IMAGE_HEIGHT_LIM = 768, IMAGE_WIDTH_LIM = 960;
 class SuperPoint_Image_describer : public openMVG::features::Image_describer
 {
 private:
+  class HostAllocator
+  {
+  public:
+    void *ptr{nullptr};
+    uint64_t current_size{0};
+
+    HostAllocator() = default;
+    ~HostAllocator()
+    {
+      if (this->ptr)
+      {
+        cudaFreeHost(this->ptr);
+      }
+    }
+    void *reallocate(uint64_t desire_size)
+    {
+      if (desire_size > this->current_size)
+      {
+        cudaError_t status = cudaSuccess;
+        if (this->ptr)
+        {
+          status = cudaFreeHost(this->ptr);
+          if (status != cudaSuccess)
+          {
+            OPENMVG_LOG_ERROR << "Failed to free memory" << cudaGetErrorString(status);
+          }
+          this->ptr = nullptr;
+          this->current_size = 0;
+        }
+        if ((status = cudaMallocHost(&this->ptr, desire_size)) == cudaSuccess)
+        {
+          this->current_size = desire_size;
+        }
+        else
+        {
+          OPENMVG_LOG_ERROR << "Failed to allocate memory" << cudaGetErrorString(status);
+        }
+      }
+      return this->ptr;
+    }
+  };
   class GPUAllocator
   {
   private:
@@ -65,9 +106,9 @@ private:
     }
     void *reallocate(uint64_t desire_size)
     {
-      cudaError_t status = cudaSuccess;
       if (desire_size > this->current_size)
       {
+        cudaError_t status = cudaSuccess;
         if (this->ptr)
         {
           status = cudaFreeAsync(this->ptr, this->stream);
@@ -78,7 +119,6 @@ private:
           this->ptr = nullptr;
           this->current_size = 0;
         }
-
         if ((status = cudaMallocAsync(&this->ptr, desire_size, this->stream)) == cudaSuccess)
         {
           this->current_size = desire_size;
@@ -116,10 +156,10 @@ private:
     }
   };
   std::unique_ptr<nvinfer1::IExecutionContext> context;
-  std::vector<float> kp_h, score_h, desc_h;
+  HostAllocator input_h, kp_h, score_h, desc_h;
   GPUAllocator input;
   OutputAllocator kp, score, desc;
-  Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic> img_input;
+
   cudaStream_t stream;
   const char *input_name = "image";
   struct
@@ -182,25 +222,18 @@ public:
     return buffer;
   }
 
-  void check_size(size_t desire_size, std::vector<float> &current_buffer)
-  {
-    if (current_buffer.size() < desire_size)
-    {
-      current_buffer.resize(desire_size);
-    }
-  }
-
   std::unique_ptr<openMVG::features::Regions> Describe(const openMVG::image::Image<unsigned char> &img_input, const openMVG::image::Image<unsigned char> *mask = nullptr) override
   {
     OPENMVG_LOG_ERROR << "Not implemented";
     return std::make_unique<openMVG::features::SuperPoint_Regions>();
   }
 
-  std::unique_ptr<openMVG::features::Regions> Describe(const cv::Mat &img_input, const size_t factor)
+  std::unique_ptr<openMVG::features::Regions> Describe(const cv::Mat &img_input, const int64_t factor)
   {
     const int image_size = img_input.cols * img_input.rows * sizeof(float);
 
-    cudaMemcpyAsync(this->input.reallocate(image_size), img_input.data, image_size, cudaMemcpyHostToDevice, this->stream);
+    std::memcpy(this->input_h.reallocate(image_size), img_input.data, image_size);
+    cudaMemcpyAsync(this->input.reallocate(image_size), this->input_h.ptr, image_size, cudaMemcpyHostToDevice, this->stream);
 
     this->context->setInputShape(this->input_name, nvinfer1::Dims4(1, 1, img_input.rows, img_input.cols));
     this->context->setInputTensorAddress(this->input_name, this->input.ptr);
@@ -210,21 +243,23 @@ public:
       OPENMVG_LOG_ERROR << "Failed to enqueue inference";
     }
 
-    const size_t kp_units = this->units_size(this->kp.output_dims);
-    const size_t score_units = this->units_size(this->score.output_dims);
-    const size_t desc_units = this->units_size(this->desc.output_dims);
+    cudaStreamSynchronize(this->stream);
 
-    this->check_size(kp_units, this->kp_h);
-    this->check_size(score_units, this->score_h);
-    this->check_size(desc_units, this->desc_h);
+    const size_t kp_bytes = this->units_size(this->kp.output_dims) * sizeof(int64_t);
+    const size_t score_bytes = this->units_size(this->score.output_dims) * sizeof(float);
+    const size_t desc_bytes = this->units_size(this->desc.output_dims) * sizeof(float);
 
-    cudaMemcpyAsync(this->kp_h.data(), this->kp.allocator.ptr, kp_units * sizeof(float), cudaMemcpyDeviceToHost, this->stream);
-    cudaMemcpyAsync(this->score_h.data(), this->score.allocator.ptr, score_units * sizeof(float), cudaMemcpyDeviceToHost, this->stream);
-    cudaMemcpyAsync(this->desc_h.data(), this->desc.allocator.ptr, desc_units * sizeof(float), cudaMemcpyDeviceToHost, this->stream);
+    this->kp_h.reallocate(kp_bytes);
+    this->score_h.reallocate(score_bytes);
+    this->desc_h.reallocate(desc_bytes);
+
+    cudaMemcpyAsync(this->kp_h.ptr, this->kp.allocator.ptr, kp_bytes, cudaMemcpyDeviceToHost, this->stream);
+    cudaMemcpyAsync(this->score_h.ptr, this->score.allocator.ptr, score_bytes, cudaMemcpyDeviceToHost, this->stream);
+    cudaMemcpyAsync(this->desc_h.ptr, this->desc.allocator.ptr, desc_bytes, cudaMemcpyDeviceToHost, this->stream);
 
     cudaStreamSynchronize(this->stream);
 
-    const int num_keypoints = kp_units / 2;
+    const int num_keypoints = this->units_size(this->kp.output_dims) / 2;
 
     if (num_keypoints == 0)
     {
@@ -236,16 +271,14 @@ public:
     regions->Features().reserve(num_keypoints);
     regions->Descriptors().reserve(num_keypoints);
 
-    // OPENMVG_LOG_INFO << "Number of keypoints detected: " << num_keypoints;
-
     for (int i = 0; i < num_keypoints; ++i)
     {
-      const float x = this->kp_h[i * 2];
-      const float y = this->kp_h[i * 2 + 1];
-      regions->Features().emplace_back(x * factor, y * factor);
+      const float x = static_cast<float>(static_cast<int64_t *>(this->kp_h.ptr)[i * 2] * factor);
+      const float y = static_cast<float>(static_cast<int64_t *>(this->kp_h.ptr)[i * 2 + 1] * factor);
+      regions->Features().emplace_back(x, y);
 
       openMVG::features::SuperPoint_Regions::DescriptorT descriptor;
-      const float *desc_start = this->desc_h.data() + i * 256;
+      const float *desc_start = static_cast<float *>(this->desc_h.ptr) + i * 256;
       std::copy(desc_start, desc_start + 256, descriptor.data());
       regions->Descriptors().push_back(descriptor);
     }
@@ -487,7 +520,7 @@ int main(int argc, char **argv)
     std::atomic<bool> preemptive_exit(false);
 
     std::vector<NVInferEnv::ImageSize> image_sizes;
-    std::vector<size_t> factors;
+    std::vector<int64_t> factors;
     std::for_each(sfm_data.views.begin(), sfm_data.views.end(),
                   [&image_sizes, &factors, &sfm_data](const openMVG::sfm::Views::value_type &kv)
                   {
@@ -500,7 +533,7 @@ int main(int argc, char **argv)
                       factors.push_back(0);
                       return;
                     }
-                    for (size_t i = 1; i <= width; ++i)
+                    for (int64_t i = 1; i <= width; ++i)
                     {
                       if (width / i <= IMAGE_WIDTH_LIM && height / i <= IMAGE_HEIGHT_LIM)
                       {
@@ -559,7 +592,7 @@ int main(int argc, char **argv)
         if (!preemptive_exit && (bForce || !stlplus::file_exists(sFeat) || !stlplus::file_exists(sDesc)))
         {
           std::vector<NVInferEnv::ImageSize>::const_iterator image_size = image_sizes.begin();
-          std::vector<size_t>::const_iterator factor = factors.begin();
+          std::vector<int64_t>::const_iterator factor = factors.begin();
           std::advance(image_size, i);
           std::advance(factor, i);
 
