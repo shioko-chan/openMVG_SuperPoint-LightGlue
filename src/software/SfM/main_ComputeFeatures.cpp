@@ -1,6 +1,7 @@
 // This file is part of OpenMVG, an Open Multiple View Geometry C++ library.
-
+// This file is modified by hrliu to integrate SuperPoint with OpenMVG.
 // Copyright (c) 2012, 2013 Pierre MOULON.
+// Copyright (c) 2025 hrliu.
 
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -19,6 +20,7 @@
 #include "openMVG/system/logger.hpp"
 #include "openMVG/system/loggerprogress.hpp"
 #include "openMVG/system/timer.hpp"
+#include "openMVG/tensorrt.hpp"
 
 #include "third_party/cmdLine/cmdLine.h"
 #include "third_party/stlplus3/filesystemSimplified/file_system.hpp"
@@ -37,124 +39,16 @@
 #include <omp.h>
 #endif
 
-#include <NvInferRuntime.h>
-#include <NvOnnxParser.h>
-#include <cuda_runtime_api.h>
 #include <opencv2/opencv.hpp>
 #include <opencv2/core/eigen.hpp>
 
 const size_t IMAGE_HEIGHT_LIM = 768, IMAGE_WIDTH_LIM = 960;
 
+using namespace openMVG::TensorRT;
+
 class SuperPoint_Image_describer : public openMVG::features::Image_describer
 {
 private:
-  class HostAllocator
-  {
-  public:
-    void *ptr{nullptr};
-    uint64_t current_size{0};
-
-    HostAllocator() = default;
-    ~HostAllocator()
-    {
-      if (this->ptr)
-      {
-        cudaFreeHost(this->ptr);
-      }
-    }
-    void *reallocate(uint64_t desire_size)
-    {
-      if (desire_size > this->current_size)
-      {
-        cudaError_t status = cudaSuccess;
-        if (this->ptr)
-        {
-          status = cudaFreeHost(this->ptr);
-          if (status != cudaSuccess)
-          {
-            OPENMVG_LOG_ERROR << "Failed to free memory" << cudaGetErrorString(status);
-          }
-          this->ptr = nullptr;
-          this->current_size = 0;
-        }
-        if ((status = cudaMallocHost(&this->ptr, desire_size)) == cudaSuccess)
-        {
-          this->current_size = desire_size;
-        }
-        else
-        {
-          OPENMVG_LOG_ERROR << "Failed to allocate memory" << cudaGetErrorString(status);
-        }
-      }
-      return this->ptr;
-    }
-  };
-  class GPUAllocator
-  {
-  private:
-    cudaStream_t stream;
-
-  public:
-    void *ptr{nullptr};
-    uint64_t current_size{0};
-
-    GPUAllocator() = default;
-    GPUAllocator(cudaStream_t stream) : stream(stream) {}
-    ~GPUAllocator()
-    {
-      cudaFree(this->ptr);
-    }
-    void *reallocate(uint64_t desire_size)
-    {
-      if (desire_size > this->current_size)
-      {
-        cudaError_t status = cudaSuccess;
-        if (this->ptr)
-        {
-          status = cudaFreeAsync(this->ptr, this->stream);
-          if (status != cudaSuccess)
-          {
-            OPENMVG_LOG_ERROR << "Failed to free memory" << cudaGetErrorString(status);
-          }
-          this->ptr = nullptr;
-          this->current_size = 0;
-        }
-        if ((status = cudaMallocAsync(&this->ptr, desire_size, this->stream)) == cudaSuccess)
-        {
-          this->current_size = desire_size;
-        }
-        else
-        {
-          OPENMVG_LOG_ERROR << "Failed to allocate memory" << cudaGetErrorString(status);
-        }
-      }
-      return this->ptr;
-    }
-  };
-  class OutputAllocator : public nvinfer1::IOutputAllocator
-  {
-  public:
-    GPUAllocator allocator;
-    nvinfer1::Dims output_dims{};
-
-    OutputAllocator() = default;
-    OutputAllocator(cudaStream_t stream)
-    {
-      this->allocator = GPUAllocator(stream);
-    }
-
-    void *reallocateOutput(
-        char const *tensor_name, void *current_memory,
-        uint64_t desire_size, uint64_t alignment) noexcept override
-    {
-      return this->allocator.reallocate(desire_size);
-    }
-
-    void notifyShape(char const *tensor_name, nvinfer1::Dims const &dims) noexcept override
-    {
-      output_dims = dims;
-    }
-  };
   std::unique_ptr<nvinfer1::IExecutionContext> context;
   HostAllocator input_h, kp_h, score_h, desc_h;
   GPUAllocator input;
@@ -271,15 +165,21 @@ public:
     regions->Features().reserve(num_keypoints);
     regions->Descriptors().reserve(num_keypoints);
 
+    const float width = 1.0f * factor * img_input.cols;
+    const float height = 1.0f * factor * img_input.rows;
+
     for (int i = 0; i < num_keypoints; ++i)
     {
       const float x = static_cast<float>(static_cast<int64_t *>(this->kp_h.ptr)[i * 2] * factor);
       const float y = static_cast<float>(static_cast<int64_t *>(this->kp_h.ptr)[i * 2 + 1] * factor);
       regions->Features().emplace_back(x, y);
 
-      openMVG::features::SuperPoint_Regions::DescriptorT descriptor;
       const float *desc_start = static_cast<float *>(this->desc_h.ptr) + i * 256;
-      std::copy(desc_start, desc_start + 256, descriptor.data());
+
+      openMVG::features::SuperPoint_Regions::DescriptorT descriptor;
+      descriptor.data()[0] = (x - width / 2) / (width / 2);
+      descriptor.data()[1] = (y - height / 2) / (height / 2);
+      std::copy(desc_start, desc_start + 256, descriptor.data() + 2);
       regions->Descriptors().push_back(descriptor);
     }
 
@@ -455,11 +355,7 @@ int main(int argc, char **argv)
         << "  (used to control the Image_describer configuration):\n"
         << "   NORMAL (default),\n"
         << "   HIGH,\n"
-        << "   ULTRA: !!Can take long time!!\n"
-#ifdef OPENMVG_USE_OPENMP
-        << "[-n|--numThreads] number of parallel computations\n"
-#endif
-        ;
+        << "   ULTRA: !!Can take long time!!\n";
 
     OPENMVG_LOG_ERROR << s;
     return EXIT_FAILURE;

@@ -9,20 +9,23 @@
 #ifndef OPENMVG_MATCHING_MATCHER_TYPE_HPP
 #define OPENMVG_MATCHING_MATCHER_TYPE_HPP
 
-namespace openMVG{
-namespace matching{
-
-enum EMatcherType : unsigned char
+namespace openMVG
 {
-  BRUTE_FORCE_L2,
-  CASCADE_HASHING_L2,
-  HNSW_L2,
-  HNSW_L1,
-  BRUTE_FORCE_HAMMING,
-  HNSW_HAMMING
-};
+  namespace matching
+  {
 
-} // namespace matching
+    enum EMatcherType : unsigned char
+    {
+      BRUTE_FORCE_L2,
+      CASCADE_HASHING_L2,
+      HNSW_L2,
+      HNSW_L1,
+      BRUTE_FORCE_HAMMING,
+      HNSW_HAMMING,
+      LIGHT_GLUE
+    };
+
+  } // namespace matching
 } // namespace openMVG
 
 #endif // OPENMVG_MATCHING_MATCHER_TYPE_HPP

@@ -2,6 +2,14 @@
 ###
 # Intrinsic image analysis and SfM_Data container initialization
 ###
+find_package(OpenCV REQUIRED)
+include_directories(${OpenCV_INCLUDE_DIRS})
+
+find_package(CUDAToolkit REQUIRED)
+include_directories(${CUDA_INCLUDE_DIRS})
+
+include_directories(/usr/include/x86_64-linux-gnu/)
+link_directories(/usr/lib/x86_64-linux-gnu/)
 
 add_executable(openMVG_main_SfMInit_ImageListing main_SfMInit_ImageListing.cpp)
 target_link_libraries(openMVG_main_SfMInit_ImageListing
@@ -35,14 +43,6 @@ install(TARGETS openMVG_main_ConvertList DESTINATION bin/)
 # - openMVG_main_ComputeFeatures: features and descriptors
 # - openMVG_main_ComputeMatches: putative matches + geometric filtered matches
 ###
-find_package(OpenCV REQUIRED)
-include_directories(${OpenCV_INCLUDE_DIRS})
-
-find_package(CUDAToolkit REQUIRED)
-include_directories(${CUDA_INCLUDE_DIRS})
-
-include_directories(/usr/include/x86_64-linux-gnu/)
-link_directories(/usr/lib/x86_64-linux-gnu/)
 
 add_executable(openMVG_main_ComputeFeatures main_ComputeFeatures.cpp)
 target_link_libraries(openMVG_main_ComputeFeatures
@@ -134,6 +134,12 @@ target_link_libraries(openMVG_main_ComputeMatches
     openMVG_multiview
     openMVG_sfm
     openMVG_system
+
+    ${CUDA_LIBRARIES}
+    nvinfer
+    nvonnxparser
+    CUDA::cudart
+
     ${STLPLUS_LIBRARY}
 )
 
