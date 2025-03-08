@@ -8,6 +8,9 @@ include_directories(${OpenCV_INCLUDE_DIRS})
 find_package(CUDAToolkit REQUIRED)
 include_directories(${CUDA_INCLUDE_DIRS})
 
+find_package(onnxruntime REQUIRED)
+include_directories(${ONNXRUNTIME_INCLUDE_DIRS})
+
 include_directories(/usr/include/x86_64-linux-gnu/)
 link_directories(/usr/lib/x86_64-linux-gnu/)
 
@@ -136,8 +139,7 @@ target_link_libraries(openMVG_main_ComputeMatches
     openMVG_system
 
     ${CUDA_LIBRARIES}
-    nvinfer
-    nvonnxparser
+    ${ONNX_LIBRARIES}
     CUDA::cudart
 
     ${STLPLUS_LIBRARY}

@@ -25,7 +25,6 @@
 #include "openMVG/stl/stl.hpp"
 #include "openMVG/system/timer.hpp"
 
-#include "openMVG/tensorrt.hpp"
 #include "third_party/cmdLine/cmdLine.h"
 #include "third_party/stlplus3/filesystemSimplified/file_system.hpp"
 
@@ -39,201 +38,133 @@ using namespace openMVG::matching;
 using namespace openMVG::sfm;
 using namespace openMVG::matching_image_collection;
 
-#include <NvInferRuntime.h>
-#include <NvOnnxParser.h>
+#include "openMVG/tensorrt.hpp"
 
-using namespace openMVG::TensorRT;
+#include <onnxruntime_cxx_api.h>
+#include <cuda_runtime_api.h>
 
-class NVInferEnv
+class InferEnv
 {
 private:
-  class Logger : public nvinfer1::ILogger
-  {
-  private:
-    nvinfer1::ILogger::Severity reportableSeverity;
-
-  public:
-    explicit Logger(nvinfer1::ILogger::Severity severity = nvinfer1::ILogger::Severity::kINFO) : reportableSeverity(severity) {}
-
-    void log(nvinfer1::ILogger::Severity severity, const char *msg) noexcept override
-    {
-      if (severity > reportableSeverity)
-      {
-        return;
-      }
-      switch (severity)
-      {
-      case nvinfer1::ILogger::Severity::kINTERNAL_ERROR:
-        OPENMVG_LOG_ERROR << "[TensorRT] INTERNAL_ERROR: " << msg;
-        break;
-      case nvinfer1::ILogger::Severity::kERROR:
-        OPENMVG_LOG_ERROR << "[TensorRT] ERROR: " << msg;
-        break;
-      case nvinfer1::ILogger::Severity::kWARNING:
-        OPENMVG_LOG_WARNING << "[TensorRT] WARNING: " << msg;
-        break;
-      case nvinfer1::ILogger::Severity::kINFO:
-        OPENMVG_LOG_INFO << "[TensorRT] INFO: " << msg;
-        break;
-      case nvinfer1::ILogger::Severity::kVERBOSE:
-        OPENMVG_LOG_INFO << "[TensorRT] VERBOSE: " << msg;
-        break;
-      }
-    }
-  };
-  Logger logger{nvinfer1::ILogger::Severity::kWARNING};
-
-  std::unique_ptr<nvinfer1::ICudaEngine> engine;
-
-  const size_t min_kp = 20, avg_kp = 3000, max_kp = 6000;
-  bool set_dimensions(nvinfer1::IOptimizationProfile *profile, const char *name, const size_t n)
-  {
-    return profile->setDimensions(name, nvinfer1::OptProfileSelector::kMIN, nvinfer1::Dims3(1, min_kp, n)) &&
-           profile->setDimensions(name, nvinfer1::OptProfileSelector::kOPT, nvinfer1::Dims3(1, avg_kp, n)) &&
-           profile->setDimensions(name, nvinfer1::OptProfileSelector::kMAX, nvinfer1::Dims3(1, max_kp, n));
-  }
-
-public:
-  NVInferEnv(const std::string &model_path = "/models/lightglue.onnx") : logger(nvinfer1::ILogger::Severity::kINFO)
-  {
-    OPENMVG_LOG_INFO << "Creating TensorRT environment";
-
-    nvinfer1::IBuilder *builder = nvinfer1::createInferBuilder(logger);
-    nvinfer1::INetworkDefinition *network = builder->createNetworkV2(1U << static_cast<unsigned int>(nvinfer1::NetworkDefinitionCreationFlag::kSTRONGLY_TYPED));
-
-    nvonnxparser::IParser *parser = nvonnxparser::createParser(*network, logger);
-    if (!parser->parseFromFile(model_path.c_str(), static_cast<int>(nvinfer1::ILogger::Severity::kINFO)))
-    {
-      OPENMVG_LOG_ERROR << "Failed to parse ONNX model: " << model_path;
-      return;
-    }
-
-    nvinfer1::IBuilderConfig *config = builder->createBuilderConfig();
-    nvinfer1::IOptimizationProfile *profile = builder->createOptimizationProfile();
-
-    if (!set_dimensions(profile, "kpts0", 2) ||
-        !set_dimensions(profile, "kpts1", 2) ||
-        !set_dimensions(profile, "desc0", 256) ||
-        !set_dimensions(profile, "desc1", 256))
-    {
-      OPENMVG_LOG_ERROR << "Failed to set optimization profile dimensions";
-      return;
-    }
-
-    const int32_t profile_idx = config->addOptimizationProfile(profile);
-    if (profile_idx == -1)
-    {
-      OPENMVG_LOG_ERROR << "Failed to add optimization profile";
-      return;
-    }
-    else
-    {
-      OPENMVG_LOG_INFO << "Optimization profile added with index: " << profile_idx;
-    }
-    config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, 4 * (static_cast<size_t>(1) << 30)); // 4GB
-
-    this->engine = std::unique_ptr<nvinfer1::ICudaEngine>(builder->buildEngineWithConfig(*network, *config));
-  }
-
-  std::unique_ptr<nvinfer1::IExecutionContext> create_context()
-  {
-    return std::unique_ptr<nvinfer1::IExecutionContext>(this->engine->createExecutionContext());
-  };
-};
-
-// By default compute square(L2 distance).
-template <typename Scalar = float, typename Metric = L2<Scalar>>
-class ArrayMatcherLightGlue : public ArrayMatcher<float, L2<float>>
-{
-private:
-  std::unique_ptr<nvinfer1::IExecutionContext> context;
+  Ort::Session session;
   cudaStream_t stream;
-  HostAllocator kp0_h, kp1_h, de0_h, de1_h, match0_h, match1_h, score0_h, score1_h;
-  GPUAllocator kp0, kp1, de0, de1;
-  OutputAllocator match0, match1, score0, score1;
+
+  using namespace openMVG::TensorRT;
+
+  std::vector<HostAllocator> host_inputs, host_outputs;
+  std::vector<GPUAllocator> device_inputs, device_outputs;
+
+  std::vector<std::string> input_names, output_names;
 
 public:
-  using DistanceType = typename Metric::ResultType;
-
-  void init_context(std::unique_ptr<nvinfer1::IExecutionContext> ctx)
+  InferEnv(const char *name, const char *model_path, const OrtLoggingLevel log_level = ORT_LOGGING_LEVEL_INFO) : Matcher(), f_dist_ratio_(distRatio)
   {
-    context = std::move(ctx);
-    cudaStreamCreate(&stream);
-    kp0 = GPUAllocator(stream);
-    kp1 = GPUAllocator(stream);
-    de0 = GPUAllocator(stream);
-    de1 = GPUAllocator(stream);
-    match0 = OutputAllocator(stream);
-    match1 = OutputAllocator(stream);
-    score0 = OutputAllocator(stream);
-    score1 = OutputAllocator(stream);
+    Ort::Env env(log_level, name);
 
-    this->context->setOptimizationProfileAsync(0, this->stream);
+    Ort::SessionOptions session_options;
 
-    this->context->setOutputAllocator("matches0", &match0);
-    this->context->setOutputAllocator("matches1", &match1);
-    this->context->setOutputAllocator("mscores0", &score0);
-    this->context->setOutputAllocator("mscores1", &score1);
+    OrtTensorRTProviderOptions provider_options;
 
-    this->context->setOutputTensorAddress("matches0", nullptr);
-    this->context->setOutputTensorAddress("matches1", nullptr);
-    this->context->setOutputTensorAddress("mscores0", nullptr);
-    this->context->setOutputTensorAddress("mscores1", nullptr);
-  }
+    provider_options.device_id = 0;
+    provider_options.trt_engine_cache_path = "/models";
+    provider_options.trt_engine_cache_enable = 1;
+    provider_options.trt_max_workspace_size = 4 * (1 << 30); // 4GB
+    provider_options.trt_fp16_enable = 1;
+    session_options.AppendExecutionProvider_TensorRT(provider_options);
 
-  ArrayMatcherLightGlue() = default;
-  ~ArrayMatcherLightGlue()
-  {
-    cudaStreamDestroy(stream);
-  }
+    session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+    session_options.SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);
+    session_options.SetOptimizedModelFilePath(model_path);
+    session_options.SetLogId(name);
+    session = Ort::Session(env, model_path, session_options);
 
-  // HostAllocator kp0_h, kp1_h, de0_h, de1_h, match0_h, match1_h, score0_h, score1_h;
-  // GPUAllocator kp0, kp1, de0, de1;
-  // OutputAllocator match0, match1, score0, score1;
-  /**
-   * Build the matching structure
-   *
-   * \param[in] dataset   Input data.
-   * \param[in] nbRows    The number of component.
-   * \param[in] dimension Length of the data contained in the dataset.
-   *
-   * \return True if success.
-   */
-  bool Build(const Scalar *dataset, int nbRows, int dimension) override
-  {
-    assert(dimension == 258);
-    // if engine
-    kp0.reallocate(nbRows * 2 * sizeof(float));
-    de0.reallocate(nbRows * 256 * sizeof(float));
-    kp0_h.reallocate(nbRows * 2 * sizeof(float));
-    de0_h.reallocate(nbRows * 256 * sizeof(float));
-
-    for (int i = 0; i < nbRows; i++)
+    Ort::AllocatorWithDefaultOptions allocator;
+    for (int i = 0; i < session.GetInputCount(); ++i)
     {
-      static_cast<float *>(kp0_h.ptr)[i * 2] = dataset[i * 258];
-      static_cast<float *>(kp0_h.ptr)[i * 2 + 1] = dataset[i * 258 + 1];
-      std::memcpy(static_cast<void *>(static_cast<float *>(de0_h.ptr) + i * 256), static_cast<const void *>(dataset + i * 258 + 2), 256 * sizeof(float));
+      input_names.push_back(session.GetInputNameAllocated(i, allocator));
+    }
+    for (int i = 0; i < session.GetOutputCount(); ++i)
+    {
+      output_names.push_back(session.GetOutputNameAllocated(i, allocator));
+    }
+    host_inputs.resize(input_names.size());
+    device_inputs.resize(input_names.size());
+    host_outputs.resize(output_names.size());
+    device_outputs.resize(output_names.size());
+  }
+
+  template <typename T>
+  bool infer(const std::vector<T *> &inputs, const std::vector<T *> &outputs)
+  {
+    for (int i = 0; i < inputs.size(); ++i)
+    {
+      cudaMemcpyAsync(device_inputs[i].ptr, inputs[i], device_inputs[i].size, cudaMemcpyHostToDevice, stream);
     }
 
-    cudaMemcpyAsync(kp0.ptr, kp0_h.ptr, nbRows * 2 * sizeof(float), cudaMemcpyHostToDevice, stream);
-    cudaMemcpyAsync(de0.ptr, de0_h.ptr, nbRows * 256 * sizeof(float), cudaMemcpyHostToDevice, stream);
+    Ort::RunOptions run_options;
+    run_options.run_log_verbosity_level = 0;
+    run_options.run_tag = "infer";
+    session.Run(run_options, input_names.data(), device_inputs.data(), input_names.size(), output_names.data(), device_outputs.data(), output_names.size());
 
-    this->context->setInputShape("kpts0", nvinfer1::Dims3(1, nbRows, 2));
-    this->context->setInputShape("desc0", nvinfer1::Dims3(1, nbRows, 256));
+    for (int i = 0; i < outputs.size(); ++i)
+    {
+      cudaMemcpyAsync(outputs[i], device_outputs[i].ptr, device_outputs[i].size, cudaMemcpyDeviceToHost, stream);
+    }
+    return true;
+  }
+}
 
-    this->context->setInputTensorAddress("kpts0", kp0.ptr);
-    this->context->setInputTensorAddress("desc0", de0.ptr);
+class RegionsMatcherLightGlue
+{
+private:
+  const features::Regions *regions;
+  InferEnv *infer_env;
+  const char *input_names[4] = {"kpts0", "kpts1", "desc0", "desc1"};
+  const char *output_names[4] = {"matches0", "matches1", "mscores0", "mscores1"};
+  Ort::MemoryInfo mem_info;
+
+public:
+  RegionsMatcherLightGlue(const features::Regions &_regions, InferEnv &_infer_env) : regions(&_regions), infer_env(&_infer_env)
+  {
+    if (regions_->RegionCount() == 0)
+    {
+      return;
+    }
+    float *dataset = static_cast<const float *>(regions->DescriptorRawData());
+    int nbRows = regions->RegionCount(), dimension = regions->DescriptorLength();
+    openMVG::features::PointFeatures points = regions->GetRegionsPositions();
+  }
+
+  bool Build(const float *dataset, int nbRows, int dimension, openMVG::features::PointFeatures points)
+  {
+    this->session = session;
+    mem_info = Ort::MemoryInfo("Cuda", OrtDeviceAllocator, 0, OrtMemTypeDefault);
+
+    // Ort::Value::CreateTensor<float>(mem_info, )
+    // session->Run();
+    // if engine
+    // kp0.reallocate(nbRows * 2 * sizeof(float));
+    // de0.reallocate(nbRows * 256 * sizeof(float));
+    // kp0_h.reallocate(nbRows * 2 * sizeof(float));
+    // de0_h.reallocate(nbRows * 256 * sizeof(float));
+
+    // for (int i = 0; i < nbRows; i++)
+    // {
+    //   static_cast<float *>(kp0_h.ptr)[i * 2] = dataset[i * 258];
+    //   static_cast<float *>(kp0_h.ptr)[i * 2 + 1] = dataset[i * 258 + 1];
+    //   std::memcpy(static_cast<void *>(static_cast<float *>(de0_h.ptr) + i * 256), static_cast<const void *>(dataset + i * 258 + 2), 256 * sizeof(float));
+    // }
+
+    // cudaMemcpyAsync(kp0.ptr, kp0_h.ptr, nbRows * 2 * sizeof(float), cudaMemcpyHostToDevice, stream);
+    // cudaMemcpyAsync(de0.ptr, de0_h.ptr, nbRows * 256 * sizeof(float), cudaMemcpyHostToDevice, stream);
+
+    // this->context->setInputShape("kpts0", nvinfer1::Dims3(1, nbRows, 2));
+    // this->context->setInputShape("desc0", nvinfer1::Dims3(1, nbRows, 256));
+
+    // this->context->setInputTensorAddress("kpts0", kp0.ptr);
+    // this->context->setInputTensorAddress("desc0", de0.ptr);
     return true;
   };
-
-  bool SearchNeighbour(
-      const Scalar *query,
-      int *indice,
-      DistanceType *distance) override
-  {
-    OPENMVG_LOG_ERROR << "NOT IMPLEMENTED !!!";
-    return false;
-  }
 
   /**
    * Search the N nearest Neighbor of the scalar array query.
@@ -247,117 +178,49 @@ public:
    * \return True if success.
    */
   bool SearchNeighbours(
-      const Scalar *query, int nbQuery,
+      const float *query, int nbQuery,
       IndMatches *indices,
-      std::vector<DistanceType> *distances,
-      size_t NN) override
+      std::vector<float> *distances,
+      size_t NN)
   {
-    kp1_h.reallocate(nbQuery * 2 * sizeof(float));
-    de1_h.reallocate(nbQuery * 256 * sizeof(float));
-    kp1.reallocate(nbQuery * 2 * sizeof(float));
-    de1.reallocate(nbQuery * 256 * sizeof(float));
 
-    for (int i = 0; i < nbQuery; i++)
-    {
-      static_cast<float *>(kp1_h.ptr)[i * 2] = query[i * 258];
-      static_cast<float *>(kp1_h.ptr)[i * 2 + 1] = query[i * 258 + 1];
-      std::memcpy(static_cast<void *>(static_cast<float *>(de1_h.ptr) + i * 256), static_cast<const void *>(query + i * 258 + 2), 256 * sizeof(float));
-    }
+    // OPENMVG_LOG_INFO << "Searching for " << nbQuery << " queries";
+    // kp1_h.reallocate(nbQuery * 2 * sizeof(float));
+    // de1_h.reallocate(nbQuery * 256 * sizeof(float));
+    // kp1.reallocate(nbQuery * 2 * sizeof(float));
+    // de1.reallocate(nbQuery * 256 * sizeof(float));
 
-    cudaMemcpyAsync(kp1.ptr, kp1_h.ptr, nbQuery * 2 * sizeof(float), cudaMemcpyHostToDevice, stream);
-    cudaMemcpyAsync(de1.ptr, de1_h.ptr, nbQuery * 256 * sizeof(float), cudaMemcpyHostToDevice, stream);
+    // for (int i = 0; i < nbQuery; i++)
+    // {
+    //   static_cast<float *>(kp1_h.ptr)[i * 2] = query[i * 258];
+    //   static_cast<float *>(kp1_h.ptr)[i * 2 + 1] = query[i * 258 + 1];
+    //   std::memcpy(static_cast<void *>(static_cast<float *>(de1_h.ptr) + i * 256), static_cast<const void *>(query + i * 258 + 2), 256 * sizeof(float));
+    // }
 
-    this->context->setInputShape("kpts1", nvinfer1::Dims3(1, nbQuery, 2));
-    this->context->setInputShape("desc1", nvinfer1::Dims3(1, nbQuery, 256));
+    // cudaMemcpyAsync(kp1.ptr, kp1_h.ptr, nbQuery * 2 * sizeof(float), cudaMemcpyHostToDevice, stream);
+    // cudaMemcpyAsync(de1.ptr, de1_h.ptr, nbQuery * 256 * sizeof(float), cudaMemcpyHostToDevice, stream);
 
-    this->context->setInputTensorAddress("kpts1", kp1.ptr);
-    this->context->setInputTensorAddress("desc1", de1.ptr);
+    // this->context->setInputShape("kpts1", nvinfer1::Dims3(1, nbQuery, 2));
+    // this->context->setInputShape("desc1", nvinfer1::Dims3(1, nbQuery, 256));
 
-    if (!this->context->enqueueV3(stream))
-    {
-      OPENMVG_LOG_ERROR << "Failed to enqueue inference";
-      return false;
-    }
+    // this->context->setInputTensorAddress("kpts1", kp1.ptr);
+    // this->context->setInputTensorAddress("desc1", de1.ptr);
 
-    cudaStreamSynchronize(this->stream);
+    // if (!this->context->enqueueV3(stream))
+    // {
+    //   OPENMVG_LOG_ERROR << "Failed to enqueue inference";
+    //   return false;
+    // }
 
-    print_dims(this->match0.output_dims, "matches0");
-    print_dims(this->match1.output_dims, "matches1");
-    print_dims(this->score0.output_dims, "scores0");
-    print_dims(this->score1.output_dims, "scores1");
+    // cudaStreamSynchronize(this->stream);
+
+    // print_dims(this->match0.output_dims, "matches0");
+    // print_dims(this->match1.output_dims, "matches1");
+    // print_dims(this->score0.output_dims, "scores0");
+    // print_dims(this->score1.output_dims, "scores1");
     return true;
   };
 
-  const char *print_dims(nvinfer1::Dims &dims, const char *name)
-  {
-    char *buffer = new char[256];
-    std::sprintf(buffer, "%s has shape: [", name);
-    for (int j = 0; j < dims.nbDims; ++j)
-    {
-      std::sprintf(buffer, "%s%ld, ", buffer, dims.d[j]);
-    }
-    std::sprintf(buffer, "%s]", buffer);
-    return buffer;
-  }
-};
-
-template <class ArrayMatcherT>
-class RegionsMatcherLightGlue : public RegionsMatcher
-{
-private:
-  ArrayMatcherT matcher_;
-  const features::Regions *regions_;
-  const bool b_squared_metric_; // Store if the metric is squared or not
-public:
-  using Scalar = typename ArrayMatcherT::ScalarT;
-  using DistanceType = typename ArrayMatcherT::DistanceType;
-
-  RegionsMatcherLightGlue() : regions_(nullptr), b_squared_metric_(false)
-  {
-  }
-
-  /**
-   * @brief Init the matcher with some reference regions.
-   */
-  RegionsMatcherLightGlue(
-      const features::Regions &regions,
-      std::unique_ptr<nvinfer1::IExecutionContext> context,
-      bool b_squared_metric = false) : regions_(&regions),
-                                       b_squared_metric_(b_squared_metric)
-  {
-    if (regions_->RegionCount() == 0)
-      return;
-    matcher_.init_context(std::move(context));
-    const Scalar *tab = reinterpret_cast<const Scalar *>(regions_->DescriptorRawData());
-    matcher_.Build(tab, regions_->RegionCount(), regions_->DescriptorLength());
-  }
-
-  bool Match(
-      const features::Regions &query_regions,
-      matching::IndMatches &matches) override
-  {
-    if (!regions_)
-      return false;
-
-    const Scalar *queries = reinterpret_cast<const Scalar *>(query_regions.DescriptorRawData());
-
-    // Search the closest neighbour for each query descriptor
-    std::vector<DistanceType> distances;
-    matches.clear();
-    if (!matcher_.SearchNeighbours(queries, query_regions.RegionCount(), &matches, &distances, 1))
-      return false;
-
-    for (auto &match : matches)
-    {
-      std::swap(match.i_, match.j_);
-    }
-
-    return (!matches.empty());
-  }
-
-  /**
-   * @brief Match some regions to the database of internal regions.
-   */
   bool MatchDistanceRatio(
       const float distance_ratio,
       const features::Regions &query_regions,
@@ -366,11 +229,11 @@ public:
     if (!regions_)
       return false;
 
-    const Scalar *queries = reinterpret_cast<const Scalar *>(query_regions.DescriptorRawData());
+    const float *queries = reinterpret_cast<const float *>(query_regions.DescriptorRawData());
 
     const size_t number_neighbor = 2;
     matching::IndMatches nn_matches;
-    std::vector<DistanceType> nn_distances;
+    std::vector<float> nn_distances;
 
     // Search the 2 closest neighbours for each query descriptor
     if (!matcher_.SearchNeighbours(queries,
@@ -390,7 +253,7 @@ public:
         nn_distances.cend(),   // distance end
         number_neighbor,       // Number of neighbor in iterator sequence (minimum required 2)
         nn_ratio_indexes,      // output (indices that respect the distance Ratio)
-        b_squared_metric_ ? Square(distance_ratio) : distance_ratio);
+        Square(distance_ratio));
 
     matches.clear();
     matches.reserve(nn_ratio_indexes.size());
@@ -407,12 +270,13 @@ public:
 class LightGlue_Matcher_Regions : public Matcher
 {
 private:
-  std::unique_ptr<NVInferEnv> env;
+  InferEnv infer_env;
+  float f_dist_ratio_;
 
 public:
-  LightGlue_Matcher_Regions(float distRatio) : Matcher(), f_dist_ratio_(distRatio)
+  LightGlue_Matcher_Regions(float distRatio, const char *model_path = "/models/lightglue.onnx") : Matcher(), f_dist_ratio_(distRatio)
   {
-    env.reset(new NVInferEnv("/models/lightglue.onnx"));
+    infer_env = InferEnv("ONNX LightGlue", model_path);
   }
 
   void Match(
@@ -454,12 +318,9 @@ public:
       }
 
       // Initialize the matching interface
-      using CurrentMatcherType = RegionsMatcherLightGlue<ArrayMatcherLightGlue<float, L2<float>>>;
-      auto matcher = std::unique_ptr<CurrentMatcherType>(new CurrentMatcherType(*regionsI.get(), env->create_context(), true));
 
-      // #ifdef OPENMVG_USE_OPENMP
-      // #pragma omp parallel for schedule(dynamic)
-      // #endif
+      RegionsMatcherLightGlue matcher(*regionsI.get(), infer_env);
+
       for (int j = 0; j < static_cast<int>(indexToCompare.size()); ++j)
       {
         const IndexT J = indexToCompare[j];
@@ -472,24 +333,17 @@ public:
         }
 
         IndMatches vec_putative_matches;
-        matcher->MatchDistanceRatio(f_dist_ratio_, *regionsJ.get(), vec_putative_matches);
+        matcher.MatchDistanceRatio(f_dist_ratio_, *regionsJ.get(), vec_putative_matches);
 
-        // #ifdef OPENMVG_USE_OPENMP
-        // #pragma omp critical
-        // #endif
+        if (!vec_putative_matches.empty())
         {
-          if (!vec_putative_matches.empty())
-          {
-            map_PutativeMatches.insert({{I, J}, std::move(vec_putative_matches)});
-          }
+          map_PutativeMatches.insert({{I, J}, std::move(vec_putative_matches)});
         }
+
         ++(*my_progress_bar);
       }
     }
   }
-
-private:
-  float f_dist_ratio_;
 };
 
 /// Compute corresponding features between a series of views:

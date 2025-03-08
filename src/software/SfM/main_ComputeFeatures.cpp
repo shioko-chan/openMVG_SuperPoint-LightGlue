@@ -161,7 +161,7 @@ public:
       return std::make_unique<openMVG::features::SuperPoint_Regions>();
     }
 
-    auto regions = std::make_unique<openMVG::features::SuperPoint_Regions>();
+    std::unique_ptr<openMVG::features::SuperPoint_Regions> regions = std::make_unique<openMVG::features::SuperPoint_Regions>();
     regions->Features().reserve(num_keypoints);
     regions->Descriptors().reserve(num_keypoints);
 
@@ -177,9 +177,7 @@ public:
       const float *desc_start = static_cast<float *>(this->desc_h.ptr) + i * 256;
 
       openMVG::features::SuperPoint_Regions::DescriptorT descriptor;
-      descriptor.data()[0] = (x - width / 2) / (width / 2);
-      descriptor.data()[1] = (y - height / 2) / (height / 2);
-      std::copy(desc_start, desc_start + 256, descriptor.data() + 2);
+      std::copy(desc_start, desc_start + 256, descriptor.data());
       regions->Descriptors().push_back(descriptor);
     }
 
