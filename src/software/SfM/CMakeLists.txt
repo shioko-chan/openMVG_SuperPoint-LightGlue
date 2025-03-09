@@ -6,13 +6,10 @@ find_package(OpenCV REQUIRED)
 include_directories(${OpenCV_INCLUDE_DIRS})
 
 find_package(CUDAToolkit REQUIRED)
-include_directories(${CUDA_INCLUDE_DIRS})
 
-find_package(onnxruntime REQUIRED)
-include_directories(${ONNXRUNTIME_INCLUDE_DIRS})
-
-include_directories(/usr/include/x86_64-linux-gnu/)
 link_directories(/usr/lib/x86_64-linux-gnu/)
+
+link_directories(/usr/local/lib64/)
 
 add_executable(openMVG_main_SfMInit_ImageListing main_SfMInit_ImageListing.cpp)
 target_link_libraries(openMVG_main_SfMInit_ImageListing
@@ -56,7 +53,6 @@ target_link_libraries(openMVG_main_ComputeFeatures
     openMVG_multiview
     openMVG_sfm
     openMVG_exif
-    ${CUDA_LIBRARIES}
     nvinfer
     nvonnxparser
     CUDA::cudart
@@ -137,11 +133,12 @@ target_link_libraries(openMVG_main_ComputeMatches
     openMVG_multiview
     openMVG_sfm
     openMVG_system
-
-    ${CUDA_LIBRARIES}
-    ${ONNX_LIBRARIES}
+    onnxruntime
     CUDA::cudart
-
+    cublas
+    cudnn
+    nvinfer
+    nvonnxparser
     ${STLPLUS_LIBRARY}
 )
 

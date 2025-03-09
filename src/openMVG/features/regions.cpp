@@ -17,32 +17,33 @@
 
 #include "openMVG/features/regions_factory_io.hpp"
 
-namespace openMVG {
-namespace features {
-
-// Init the regions_type from an image describer file (used for regions loading)
-std::unique_ptr<features::Regions> Init_region_type_from_file
-(
-  const std::string & sImage_describer_file
-)
+namespace openMVG
 {
-  std::unique_ptr<Regions> regions_type;
-  if (stlplus::is_file(sImage_describer_file))
+  namespace features
   {
-    // Dynamically load the regions type from the file
-    std::ifstream stream(sImage_describer_file);
-    if (stream)
-    {
-      cereal::JSONInputArchive archive(stream);
-      archive(cereal::make_nvp("regions_type", regions_type));
-    }
-  }
-  else // By default init a SIFT regions type (keep compatibility)
-  {
-    regions_type.reset(new features::SIFT_Regions());
-  }
-  return regions_type;
-}
 
-} // namespace features
+    // Init the regions_type from an image describer file (used for regions loading)
+    std::unique_ptr<features::Regions> Init_region_type_from_file(
+        const std::string &sImage_describer_file)
+    {
+      std::unique_ptr<Regions> regions_type;
+      std::cout << stlplus::is_file(sImage_describer_file) << "!!!!!!!!!!!!!!" << sImage_describer_file << std::endl;
+      if (stlplus::is_file(sImage_describer_file))
+      {
+        // Dynamically load the regions type from the file
+        std::ifstream stream(sImage_describer_file);
+        if (stream)
+        {
+          cereal::JSONInputArchive archive(stream);
+          archive(cereal::make_nvp("regions_type", regions_type));
+        }
+      }
+      else // By default init a SIFT regions type (keep compatibility)
+      {
+        regions_type.reset(new features::SIFT_Regions());
+      }
+      return regions_type;
+    }
+
+  } // namespace features
 } // namespace openMVG

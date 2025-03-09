@@ -33,138 +33,147 @@
 #include <memory>
 #include <string>
 
+#include <onnxruntime_cxx_api.h>
+
 using namespace openMVG;
 using namespace openMVG::matching;
 using namespace openMVG::sfm;
 using namespace openMVG::matching_image_collection;
 
-#include "openMVG/tensorrt.hpp"
-
-#include <onnxruntime_cxx_api.h>
-#include <cuda_runtime_api.h>
-
 class InferEnv
 {
 private:
-  Ort::Session session;
-  cudaStream_t stream;
-
-  using namespace openMVG::TensorRT;
-
-  std::vector<HostAllocator> host_inputs, host_outputs;
-  std::vector<GPUAllocator> device_inputs, device_outputs;
-
+  std::unique_ptr<Ort::Session> session;
+  std::vector<Ort::Value> inputs;
+  Ort::MemoryInfo memory_info{nullptr};
   std::vector<std::string> input_names, output_names;
+  std::vector<const char *> input_names_cstr, output_names_cstr;
 
 public:
-  InferEnv(const char *name, const char *model_path, const OrtLoggingLevel log_level = ORT_LOGGING_LEVEL_INFO) : Matcher(), f_dist_ratio_(distRatio)
+  InferEnv() = default;
+  InferEnv(const char *name, const char *model_path, const OrtLoggingLevel log_level = ORT_LOGGING_LEVEL_INFO)
   {
     Ort::Env env(log_level, name);
 
     Ort::SessionOptions session_options;
 
-    OrtTensorRTProviderOptions provider_options;
+    auto providers = Ort::GetAvailableProviders();
+    std::string available_providers;
+    for (auto &&provider : providers)
+    {
+      available_providers += provider + " ";
+    }
+    OPENMVG_LOG_INFO << "Available providers are: [" << available_providers << "]";
 
-    provider_options.device_id = 0;
-    provider_options.trt_engine_cache_path = "/models";
-    provider_options.trt_engine_cache_enable = 1;
-    provider_options.trt_max_workspace_size = 4 * (1 << 30); // 4GB
-    provider_options.trt_fp16_enable = 1;
-    session_options.AppendExecutionProvider_TensorRT(provider_options);
+    // OrtTensorRTProviderOptions provider_options;
+    // provider_options.device_id = 0;
+    // provider_options.trt_engine_cache_path = "/models";
+    // provider_options.trt_engine_cache_enable = 1;
+    // provider_options.trt_max_workspace_size = 4 * (1UL << 30); // 4GB
+    // provider_options.trt_fp16_enable = 1;
+    // OPENMVG_LOG_INFO << "TensorRT PROVIDER";
+    // try
+    // {
+    // session_options.AppendExecutionProvider_TensorRT(provider_options);
+    // }
+    // catch (const std::exception &e)
+    // {
+    //   OPENMVG_LOG_ERROR << "Error loading TensorRT provider: " << e.what();
+    //   throw;
+    // }
+    // OPENMVG_LOG_INFO << "TensorRT PROVIDER APPENDED";
 
+    // OPENMVG_LOG_INFO << "TensorRT Execution Provider enabled";
     session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
     session_options.SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);
-    session_options.SetOptimizedModelFilePath(model_path);
-    session_options.SetLogId(name);
-    session = Ort::Session(env, model_path, session_options);
+    // session_options.SetOptimizedModelFilePath(model_path);
 
+    OPENMVG_LOG_INFO << "Model path: " << model_path;
+    try
+    {
+      session.reset(new Ort::Session(env, model_path, session_options));
+    }
+    catch (const std::exception &e)
+    {
+      OPENMVG_LOG_ERROR << "Error loading model: " << e.what();
+      throw;
+    }
+    OPENMVG_LOG_INFO << "Session created";
     Ort::AllocatorWithDefaultOptions allocator;
-    for (int i = 0; i < session.GetInputCount(); ++i)
+    for (int i = 0; i < session->GetInputCount(); ++i)
     {
-      input_names.push_back(session.GetInputNameAllocated(i, allocator));
+      input_names.emplace_back(session->GetInputNameAllocated(i, allocator).get());
+      inputs.push_back(Ort::Value(nullptr));
     }
-    for (int i = 0; i < session.GetOutputCount(); ++i)
+    for (int i = 0; i < session->GetOutputCount(); ++i)
     {
-      output_names.push_back(session.GetOutputNameAllocated(i, allocator));
+      output_names.emplace_back(session->GetOutputNameAllocated(i, allocator).get());
     }
-    host_inputs.resize(input_names.size());
-    device_inputs.resize(input_names.size());
-    host_outputs.resize(output_names.size());
-    device_outputs.resize(output_names.size());
-  }
+    std::transform(input_names.begin(), input_names.end(), std::back_inserter(input_names_cstr), [](std::string const &s)
+                   { return s.c_str(); });
+    std::transform(output_names.begin(), output_names.end(), std::back_inserter(output_names_cstr), [](std::string const &s)
+                   { return s.c_str(); });
 
+    OPENMVG_LOG_INFO << "Model loaded: " << model_path;
+    memory_info = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU);
+  }
   template <typename T>
-  bool infer(const std::vector<T *> &inputs, const std::vector<T *> &outputs)
+  void set_input(std::string const &name, std::vector<T> &input, std::vector<int64_t> const &shape)
   {
-    for (int i = 0; i < inputs.size(); ++i)
+    size_t idx = std::find(input_names.begin(), input_names.end(), name) - input_names.begin();
+    if (idx >= input_names.size())
     {
-      cudaMemcpyAsync(device_inputs[i].ptr, inputs[i], device_inputs[i].size, cudaMemcpyHostToDevice, stream);
+      throw std::runtime_error("Input name not found");
     }
-
-    Ort::RunOptions run_options;
-    run_options.run_log_verbosity_level = 0;
-    run_options.run_tag = "infer";
-    session.Run(run_options, input_names.data(), device_inputs.data(), input_names.size(), output_names.data(), device_outputs.data(), output_names.size());
-
-    for (int i = 0; i < outputs.size(); ++i)
-    {
-      cudaMemcpyAsync(outputs[i], device_outputs[i].ptr, device_outputs[i].size, cudaMemcpyDeviceToHost, stream);
-    }
-    return true;
+    OPENMVG_LOG_INFO << "Setting input: " << name << " idx: " << idx;
+    inputs[idx] = Ort::Value::CreateTensor<T>(memory_info, input.data(), input.size(), shape.data(), shape.size());
   }
-}
+
+  const std::vector<Ort::Value> infer()
+  {
+    return session->Run(Ort::RunOptions{nullptr}, input_names_cstr.data(), inputs.data(), input_names.size(), output_names_cstr.data(), output_names.size());
+  }
+
+  const std::vector<std::string> &get_input_names() const
+  {
+    return input_names;
+  }
+
+  const std::vector<std::string> &get_output_names() const
+  {
+    return output_names;
+  }
+};
 
 class RegionsMatcherLightGlue
 {
 private:
   const features::Regions *regions;
   InferEnv *infer_env;
-  const char *input_names[4] = {"kpts0", "kpts1", "desc0", "desc1"};
-  const char *output_names[4] = {"matches0", "matches1", "mscores0", "mscores1"};
-  Ort::MemoryInfo mem_info;
+  std::vector<float> kp0, desc0;
 
 public:
-  RegionsMatcherLightGlue(const features::Regions &_regions, InferEnv &_infer_env) : regions(&_regions), infer_env(&_infer_env)
+  RegionsMatcherLightGlue(const features::Regions &_regions, InferEnv *_infer_env) : regions(&_regions), infer_env(_infer_env)
   {
-    if (regions_->RegionCount() == 0)
+    if (regions->RegionCount() == 0)
     {
       return;
     }
-    float *dataset = static_cast<const float *>(regions->DescriptorRawData());
+    const float *dataset = static_cast<const float *>(regions->DescriptorRawData());
     int nbRows = regions->RegionCount(), dimension = regions->DescriptorLength();
-    openMVG::features::PointFeatures points = regions->GetRegionsPositions();
+    kp0.reserve(nbRows * 2);
+    desc0.reserve(nbRows * (dimension - 2));
+    OPENMVG_LOG_INFO << "dimension:" << dimension << " nbRows:" << nbRows;
+    assert(("not a case", dimension == 258));
+    for (int i = 0; i < nbRows; i++)
+    {
+      kp0.push_back(dataset[i * 258]);
+      kp0.push_back(dataset[i * 258 + 1]);
+      desc0.insert(desc0.end(), dataset + i * 258 + 2, dataset + (i + 1) * 258);
+    }
+    infer_env->set_input("kpts0", kp0, {1, nbRows, 2});
+    infer_env->set_input("desc0", desc0, {1, nbRows, 256});
   }
-
-  bool Build(const float *dataset, int nbRows, int dimension, openMVG::features::PointFeatures points)
-  {
-    this->session = session;
-    mem_info = Ort::MemoryInfo("Cuda", OrtDeviceAllocator, 0, OrtMemTypeDefault);
-
-    // Ort::Value::CreateTensor<float>(mem_info, )
-    // session->Run();
-    // if engine
-    // kp0.reallocate(nbRows * 2 * sizeof(float));
-    // de0.reallocate(nbRows * 256 * sizeof(float));
-    // kp0_h.reallocate(nbRows * 2 * sizeof(float));
-    // de0_h.reallocate(nbRows * 256 * sizeof(float));
-
-    // for (int i = 0; i < nbRows; i++)
-    // {
-    //   static_cast<float *>(kp0_h.ptr)[i * 2] = dataset[i * 258];
-    //   static_cast<float *>(kp0_h.ptr)[i * 2 + 1] = dataset[i * 258 + 1];
-    //   std::memcpy(static_cast<void *>(static_cast<float *>(de0_h.ptr) + i * 256), static_cast<const void *>(dataset + i * 258 + 2), 256 * sizeof(float));
-    // }
-
-    // cudaMemcpyAsync(kp0.ptr, kp0_h.ptr, nbRows * 2 * sizeof(float), cudaMemcpyHostToDevice, stream);
-    // cudaMemcpyAsync(de0.ptr, de0_h.ptr, nbRows * 256 * sizeof(float), cudaMemcpyHostToDevice, stream);
-
-    // this->context->setInputShape("kpts0", nvinfer1::Dims3(1, nbRows, 2));
-    // this->context->setInputShape("desc0", nvinfer1::Dims3(1, nbRows, 256));
-
-    // this->context->setInputTensorAddress("kpts0", kp0.ptr);
-    // this->context->setInputTensorAddress("desc0", de0.ptr);
-    return true;
-  };
 
   /**
    * Search the N nearest Neighbor of the scalar array query.
@@ -177,56 +186,47 @@ public:
    *
    * \return True if success.
    */
-  bool SearchNeighbours(
-      const float *query, int nbQuery,
-      IndMatches *indices,
-      std::vector<float> *distances,
-      size_t NN)
+  bool SearchNeighbours(const float *query, int nbQuery, IndMatches *indices, std::vector<float> *distances, size_t NN)
   {
 
-    // OPENMVG_LOG_INFO << "Searching for " << nbQuery << " queries";
-    // kp1_h.reallocate(nbQuery * 2 * sizeof(float));
-    // de1_h.reallocate(nbQuery * 256 * sizeof(float));
-    // kp1.reallocate(nbQuery * 2 * sizeof(float));
-    // de1.reallocate(nbQuery * 256 * sizeof(float));
+    OPENMVG_LOG_INFO << "Searching for " << nbQuery << " queries";
 
-    // for (int i = 0; i < nbQuery; i++)
-    // {
-    //   static_cast<float *>(kp1_h.ptr)[i * 2] = query[i * 258];
-    //   static_cast<float *>(kp1_h.ptr)[i * 2 + 1] = query[i * 258 + 1];
-    //   std::memcpy(static_cast<void *>(static_cast<float *>(de1_h.ptr) + i * 256), static_cast<const void *>(query + i * 258 + 2), 256 * sizeof(float));
-    // }
+    std::vector<float> kp1, desc1;
+    kp1.reserve(nbQuery * 2);
+    desc1.reserve(nbQuery * 256);
 
-    // cudaMemcpyAsync(kp1.ptr, kp1_h.ptr, nbQuery * 2 * sizeof(float), cudaMemcpyHostToDevice, stream);
-    // cudaMemcpyAsync(de1.ptr, de1_h.ptr, nbQuery * 256 * sizeof(float), cudaMemcpyHostToDevice, stream);
+    for (int i = 0; i < nbQuery; i++)
+    {
+      kp1.push_back(query[i * 258]);
+      kp1.push_back(query[i * 258 + 1]);
+      desc1.insert(desc1.end(), query + i * 258 + 2, query + (i + 1) * 258);
+    }
 
-    // this->context->setInputShape("kpts1", nvinfer1::Dims3(1, nbQuery, 2));
-    // this->context->setInputShape("desc1", nvinfer1::Dims3(1, nbQuery, 256));
+    infer_env->set_input("kpts1", kp1, {1, nbQuery, 2});
+    infer_env->set_input("desc1", desc1, {1, nbQuery, 256});
 
-    // this->context->setInputTensorAddress("kpts1", kp1.ptr);
-    // this->context->setInputTensorAddress("desc1", de1.ptr);
+    auto res = infer_env->infer();
 
-    // if (!this->context->enqueueV3(stream))
-    // {
-    //   OPENMVG_LOG_ERROR << "Failed to enqueue inference";
-    //   return false;
-    // }
-
-    // cudaStreamSynchronize(this->stream);
-
-    // print_dims(this->match0.output_dims, "matches0");
-    // print_dims(this->match1.output_dims, "matches1");
-    // print_dims(this->score0.output_dims, "scores0");
-    // print_dims(this->score1.output_dims, "scores1");
+    for (auto &r : res)
+    {
+      auto shape = r.GetTensorTypeAndShapeInfo().GetShape();
+      std::string shape_str;
+      for (int i = 0; i < shape.size(); i++)
+      {
+        shape_str += std::to_string(shape[i]) + " ";
+      }
+      OPENMVG_LOG_INFO << "Output shape: " << shape_str;
+      // auto data = r.GetTensorMutableData<float>();
+    }
     return true;
   };
 
   bool MatchDistanceRatio(
       const float distance_ratio,
       const features::Regions &query_regions,
-      matching::IndMatches &matches) override
+      matching::IndMatches &matches)
   {
-    if (!regions_)
+    if (!regions)
       return false;
 
     const float *queries = reinterpret_cast<const float *>(query_regions.DescriptorRawData());
@@ -236,11 +236,11 @@ public:
     std::vector<float> nn_distances;
 
     // Search the 2 closest neighbours for each query descriptor
-    if (!matcher_.SearchNeighbours(queries,
-                                   query_regions.RegionCount(),
-                                   &nn_matches,
-                                   &nn_distances,
-                                   number_neighbor))
+    if (!this->SearchNeighbours(queries,
+                                query_regions.RegionCount(),
+                                &nn_matches,
+                                &nn_distances,
+                                number_neighbor))
       return false;
 
     std::vector<int> nn_ratio_indexes;
@@ -270,13 +270,13 @@ public:
 class LightGlue_Matcher_Regions : public Matcher
 {
 private:
-  InferEnv infer_env;
+  std::unique_ptr<InferEnv> infer_env;
   float f_dist_ratio_;
 
 public:
   LightGlue_Matcher_Regions(float distRatio, const char *model_path = "/models/lightglue.onnx") : Matcher(), f_dist_ratio_(distRatio)
   {
-    infer_env = InferEnv("ONNX LightGlue", model_path);
+    infer_env.reset(new InferEnv("ONNX LightGlue", model_path));
   }
 
   void Match(
@@ -317,9 +317,7 @@ public:
         continue;
       }
 
-      // Initialize the matching interface
-
-      RegionsMatcherLightGlue matcher(*regionsI.get(), infer_env);
+      RegionsMatcherLightGlue matcher(*regionsI.get(), infer_env.get());
 
       for (int j = 0; j < static_cast<int>(indexToCompare.size()); ++j)
       {
@@ -418,10 +416,9 @@ int main(int argc, char **argv)
     return EXIT_FAILURE;
   }
 
-  // ------
+  //!!---------------------------------------
   sNearestMatchingMethod = "LIGHTGLUE";
-  // ------
-
+  //!!---------------------------------------
   OPENMVG_LOG_INFO << " You called : "
                    << "\n"
                    << argv[0] << "\n"
@@ -470,6 +467,9 @@ int main(int argc, char **argv)
   using namespace openMVG::features;
   const std::string sImage_describer = stlplus::create_filespec(sMatchesDirectory, "image_describer", "json");
   std::unique_ptr<Regions> regions_type = Init_region_type_from_file(sImage_describer);
+  //!!--------------------------------------------------------------
+  regions_type.reset(new features::SuperPoint_Regions());
+  //!!--------------------------------------------------------------
   if (!regions_type)
   {
     OPENMVG_LOG_ERROR << "Invalid: " << sImage_describer << " regions type file.";
