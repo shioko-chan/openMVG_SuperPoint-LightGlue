@@ -131,7 +131,7 @@ target_link_libraries(openMVG_main_ComputeMatches
     openMVG_system
     onnxruntime
     CUDA::cudart
-    cublas
+    # cublas
     cudnn
     nvinfer
     nvonnxparser
