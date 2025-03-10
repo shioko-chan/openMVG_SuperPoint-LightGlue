@@ -7,10 +7,6 @@ include_directories(${OpenCV_INCLUDE_DIRS})
 
 find_package(CUDAToolkit REQUIRED)
 
-link_directories(/usr/lib/x86_64-linux-gnu/)
-
-link_directories(/usr/local/lib64/)
-
 add_executable(openMVG_main_SfMInit_ImageListing main_SfMInit_ImageListing.cpp)
 target_link_libraries(openMVG_main_SfMInit_ImageListing
   PRIVATE

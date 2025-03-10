@@ -1,0 +1,100 @@
+FROM nvidia/cuda:12.0.0-cudnn8-devel-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+
+ENV http_proxy=${HTTP_PROXY}
+ENV https_proxy=${HTTPS_PROXY}
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates apt-transport-https software-properties-common \
+    build-essential gnupg pkg-config ninja-build \
+    wget curl zip unzip tar git \
+    libpng-dev libjpeg-dev libtiff-dev libxxf86vm1 libxxf86vm-dev \
+    libxi-dev libxrandr-dev \
+    libopencv-dev libceres-dev libboost-all-dev \
+    libatlas-base-dev libglfw3-dev libmpfr-dev libgmp-dev  \
+    # graphviz qtbase5-dev qt5-qmake libqt5svg5-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt
+RUN wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | gpg --dearmor - | tee /usr/share/keyrings/kitware-archive-keyring.gpg >/dev/null \
+    && echo 'deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ jammy main' | tee /etc/apt/sources.list.d/kitware.list >/dev/null \
+    && apt-get update && apt-get install -y cmake \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt
+RUN wget https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/10.8.0/local_repo/nv-tensorrt-local-repo-ubuntu2204-10.8.0-cuda-12.8_1.0-1_amd64.deb \
+    && dpkg -i nv-tensorrt-local-repo-ubuntu2204-10.8.0-cuda-12.8_1.0-1_amd64.deb \
+    && cp /var/nv-tensorrt-local-repo-ubuntu2204-10.8.0-cuda-12.8/*-keyring.gpg /usr/share/keyrings/ \
+    && apt-get update \
+    && apt-get install -y tensorrt \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm nv-tensorrt-local-repo-ubuntu2204-10.8.0-cuda-12.8_1.0-1_amd64.deb
+
+WORKDIR /opt
+RUN wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb \
+    && dpkg -i cuda-keyring_1.1-1_all.deb \
+    && apt-get update \
+    && apt-get install -y cudnn9-cuda-12 \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm cuda-keyring_1.1-1_all.deb
+
+WORKDIR /opt
+RUN git clone https://github.com/microsoft/vcpkg.git \
+    && cd vcpkg \
+    && ./bootstrap-vcpkg.sh 
+
+ENV VCPKG_INSTALLATION_ROOT=/opt/vcpkg
+
+WORKDIR /opt
+RUN git clone --recursive https://github.com/Microsoft/onnxruntime.git \
+    && cd onnxruntime \
+    && git checkout v1.21.0 \
+    && ./build.sh --config Release --build_shared_lib \
+    --use_cuda --cuda_version 12.0 --cuda_home /usr/local/cuda --cudnn_home /usr/lib/x86_64-linux-gnu \
+    --allow_running_as_root --compile_no_warning_as_error --skip_submodule_sync --parallel 2 \
+    --cmake_extra_defines CMAKE_OSX_ARCHITECTURES=x86_64 --skip_tests --use_vcpkg \
+    && rm -r /opt/onnxruntime/
+
+WORKDIR /opt
+RUN wget https://github.com/CGAL/cgal/releases/download/v6.0.1/CGAL-6.0.1.tar.xz \
+    && tar -xvf CGAL-6.0.1.tar.xz \
+    && cd CGAL-6.0.1 \
+    && cmake . && make install \
+    && rm -r /opt/CGAL-6.0.1/ /opt/CGAL-6.0.1.tar.xz
+
+WORKDIR /opt
+RUN git clone --recursive https://github.com/shioko-chan/openMVG_SuperPoint-LightGlue.git \
+    && cd openMVG_SuperPoint-LightGlue \
+    && git submodule update --init --recursive \
+    && mkdir openMVG_Build \
+    && cd openMVG_Build \
+    && cmake -DCMAKE_BUILD_TYPE=Release \
+    -DOpenMVG_BUILD_TESTS=ON \
+    -DOpenMVG_BUILD_EXAMPLES=OFF \
+    ../src \
+    && cmake --build . --parallel $(nproc) \
+    && cmake --install . 
+
+WORKDIR /opt
+RUN git clone --recurse-submodules https://github.com/cdcseacave/openMVS.git \
+    && git clone -b devel https://github.com/cnr-isti-vclab/vcglib.git \
+    && mkdir openMVS/openMVS_Build \
+    && cd openMVS/openMVS_Build \
+    && cmake .. \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_LIBRARY_PATH=/usr/local/cuda/lib64/stubs \
+    -DVCG_ROOT=/opt/vcglib \
+    -DEigen3_DIR=/usr/local/share/eigen3/cmake \
+    -DCGAL_DIR=/opt/CGAL-6.0.1 \
+    && cmake --build . --parallel $(nproc) \
+    && cmake --install . \
+    && mv /usr/local/bin/OpenMVS/* /usr/local/bin/
+
+COPY models /models
+
+WORKDIR /opt
+ENTRYPOINT [ "/bin/bash" ]
