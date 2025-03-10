@@ -285,10 +285,7 @@ public:
 
   std::unique_ptr<SuperPoint_Image_describer> create_describer()
   {
-    return std::unique_ptr<SuperPoint_Image_describer>(
-        new SuperPoint_Image_describer(
-            std::unique_ptr<nvinfer1::IExecutionContext>(
-                this->engine->createExecutionContext())));
+    return std::unique_ptr<SuperPoint_Image_describer>(new SuperPoint_Image_describer(std::unique_ptr<nvinfer1::IExecutionContext>(this->engine->createExecutionContext())));
   }
 };
 
@@ -464,7 +461,7 @@ int main(int argc, char **argv)
     NVInferEnv env(max_size, min_size, avg_size);
 
 #ifdef OPENMVG_USE_OPENMP
-    int thread_count = std::min(omp_get_max_threads(), 5);
+    int thread_count = std::min(omp_get_max_threads(), 10);
     omp_set_num_threads(thread_count);
     OPENMVG_LOG_INFO << "Using " << thread_count << " threads";
 #pragma omp parallel

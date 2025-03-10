@@ -18,4 +18,5 @@ build
 # Vscode
 .vscode
 
+core
 openMVG_Build/

@@ -27,7 +27,6 @@ namespace openMVG
         const std::string &sImage_describer_file)
     {
       std::unique_ptr<Regions> regions_type;
-      std::cout << stlplus::is_file(sImage_describer_file) << "!!!!!!!!!!!!!!" << sImage_describer_file << std::endl;
       if (stlplus::is_file(sImage_describer_file))
       {
         // Dynamically load the regions type from the file

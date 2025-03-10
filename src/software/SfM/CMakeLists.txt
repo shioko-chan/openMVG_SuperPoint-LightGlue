@@ -1,10 +1,7 @@
-
 ###
 # Intrinsic image analysis and SfM_Data container initialization
 ###
 find_package(OpenCV REQUIRED)
-include_directories(${OpenCV_INCLUDE_DIRS})
-
 find_package(CUDAToolkit REQUIRED)
 
 add_executable(openMVG_main_SfMInit_ImageListing main_SfMInit_ImageListing.cpp)

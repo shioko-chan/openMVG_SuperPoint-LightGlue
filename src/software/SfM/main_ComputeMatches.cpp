@@ -58,48 +58,16 @@ public:
 
     Ort::SessionOptions session_options;
 
-    auto providers = Ort::GetAvailableProviders();
-    std::string available_providers;
-    for (auto &&provider : providers)
-    {
-      available_providers += provider + " ";
-    }
-    OPENMVG_LOG_INFO << "Available providers are: [" << available_providers << "]";
-
-    OrtTensorRTProviderOptions provider_options;
+    OrtCUDAProviderOptions provider_options;
     provider_options.device_id = 0;
-    provider_options.trt_engine_cache_path = "/models";
-    provider_options.trt_engine_cache_enable = 1;
-    provider_options.trt_max_workspace_size = 4 * (1UL << 30); // 4GB
-    provider_options.trt_fp16_enable = 1;
-    OPENMVG_LOG_INFO << "TensorRT PROVIDER";
-    try
-    {
-      session_options.AppendExecutionProvider_TensorRT(provider_options);
-    }
-    catch (const std::exception &e)
-    {
-      OPENMVG_LOG_ERROR << "Error loading TensorRT provider: " << e.what();
-      throw;
-    }
-    OPENMVG_LOG_INFO << "TensorRT PROVIDER APPENDED";
 
-    OPENMVG_LOG_INFO << "TensorRT Execution Provider enabled";
+    session_options.AppendExecutionProvider_CUDA(provider_options);
+
     session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
     session_options.SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);
-    // session_options.SetOptimizedModelFilePath(model_path);
 
-    OPENMVG_LOG_INFO << "Model path: " << model_path;
-    try
-    {
-      session.reset(new Ort::Session(env, model_path, session_options));
-    }
-    catch (const std::exception &e)
-    {
-      OPENMVG_LOG_ERROR << "Error loading model: " << e.what();
-      throw;
-    }
-    OPENMVG_LOG_INFO << "Session created";
+    session.reset(new Ort::Session(env, model_path, session_options));
+
     Ort::AllocatorWithDefaultOptions allocator;
     for (int i = 0; i < session->GetInputCount(); ++i)
     {
@@ -110,37 +78,24 @@ public:
     {
       output_names.emplace_back(session->GetOutputNameAllocated(i, allocator).get());
     }
+
     std::transform(input_names.begin(), input_names.end(), std::back_inserter(input_names_cstr), [](std::string const &s)
                    { return s.c_str(); });
+
     std::transform(output_names.begin(), output_names.end(), std::back_inserter(output_names_cstr), [](std::string const &s)
                    { return s.c_str(); });
-
-    OPENMVG_LOG_INFO << "Model loaded: " << model_path;
   }
+
   template <typename T>
   void set_input(std::string const &name, std::vector<T> &input, std::vector<int64_t> const &shape)
   {
     size_t idx = std::find(input_names.begin(), input_names.end(), name) - input_names.begin();
-    if (idx >= input_names.size())
-    {
-      throw std::runtime_error("Input name not found");
-    }
-    OPENMVG_LOG_INFO << "Setting input: " << name << " idx: " << idx;
     inputs[idx] = Ort::Value::CreateTensor<T>(memory_info, input.data(), input.size(), shape.data(), shape.size());
   }
 
   const std::vector<Ort::Value> infer()
   {
-    try
-    {
-      OPENMVG_LOG_INFO << "Running model" << input_names.size() << " " << output_names.size() << " " << inputs.size();
-      return session->Run(Ort::RunOptions{nullptr}, input_names_cstr.data(), inputs.data(), input_names.size(), output_names_cstr.data(), output_names.size());
-    }
-    catch (const std::exception &e)
-    {
-      OPENMVG_LOG_ERROR << "Error running model: " << e.what();
-      throw;
-    }
+    return session->Run(Ort::RunOptions{nullptr}, input_names_cstr.data(), inputs.data(), input_names.size(), output_names_cstr.data(), output_names.size());
   }
 
   inline const std::vector<std::string> &get_input_names() const
@@ -155,13 +110,7 @@ public:
 
   inline const size_t get_output_index(std::string const &name) const
   {
-    size_t res = std::find(output_names.begin(), output_names.end(), name) - output_names.begin();
-    if (res >= output_names.size())
-    {
-      throw std::runtime_error("Output name not found");
-    }
-    return res;
-    // return std::find(output_names.begin(), output_names.end(), name) - output_names.begin();
+    return std::find(output_names.begin(), output_names.end(), name) - output_names.begin();
   }
 };
 
@@ -183,7 +132,7 @@ public:
     int nbRows = regions->RegionCount(), dimension = regions->DescriptorLength();
     kp0.reserve(nbRows * 2);
     desc0.reserve(nbRows * (dimension - 2));
-    OPENMVG_LOG_INFO << "dimension:" << dimension << " nbRows:" << nbRows;
+
     for (int i = 0; i < nbRows; i++)
     {
       kp0.push_back(dataset[i * 258]);
@@ -194,16 +143,6 @@ public:
     infer_env->set_input("desc0", desc0, {1, nbRows, 256});
   }
 
-  /**
-   * Match the scalar array query.
-   *
-   * \param[in]   query     The query array.
-   * \param[in]   nbQuery   The number of query rows.
-   * \param[out]  indices   The corresponding (query, neighbor) indices.
-   * \param[out]  distances The distances between the matched arrays.
-   *
-   * \return True if success.
-   */
   bool Match(const float threshold, const features::Regions &query_regions, matching::IndMatches &matches)
   {
 
@@ -213,71 +152,61 @@ public:
     }
     const float *query = reinterpret_cast<const float *>(query_regions.DescriptorRawData());
     const int nbQuery = query_regions.RegionCount();
-    OPENMVG_LOG_INFO << "Searching for " << nbQuery << " queries";
-    try
+    std::vector<float> kp1, desc1;
+    kp1.reserve(nbQuery * 2);
+    desc1.reserve(nbQuery * 256);
+
+    for (int i = 0; i < nbQuery; i++)
     {
-
-      std::vector<float> kp1, desc1;
-      kp1.reserve(nbQuery * 2);
-      desc1.reserve(nbQuery * 256);
-
-      for (int i = 0; i < nbQuery; i++)
-      {
-        kp1.push_back(query[i * 258]);
-        kp1.push_back(query[i * 258 + 1]);
-        desc1.insert(desc1.end(), query + i * 258 + 2, query + (i + 1) * 258);
-      }
-
-      infer_env->set_input("kpts1", kp1, {1, nbQuery, 2});
-      infer_env->set_input("desc1", desc1, {1, nbQuery, 256});
-
-      std::vector<Ort::Value> res = infer_env->infer();
-
-      const Ort::Value &matches0 = res[infer_env->get_output_index("matches0")],
-                       &matches1 = res[infer_env->get_output_index("matches1")],
-                       &scores0 = res[infer_env->get_output_index("mscores0")],
-                       &scores1 = res[infer_env->get_output_index("mscores1")];
-
-      const size_t match_cnt_0 = matches0.GetTensorTypeAndShapeInfo().GetShape()[1],
-                   match_cnt_1 = matches1.GetTensorTypeAndShapeInfo().GetShape()[1];
-
-      const int64_t *m0 = matches0.GetTensorData<int64_t>(), *m1 = matches1.GetTensorData<int64_t>();
-      const float *s0 = scores0.GetTensorData<float>(), *s1 = scores1.GetTensorData<float>();
-      std::unordered_map<int64_t, int64_t> match_map_1_0, match_map_0_1;
-      for (size_t i = 0; i < match_cnt_0; ++i)
-      {
-        if (match_map_1_0.count(m0[i]) == 0 || s0[match_map_1_0[m0[i]]] < s0[i])
-        {
-          match_map_1_0[m0[i]] = i;
-        }
-      }
-      for (size_t i = 0; i < match_cnt_1; ++i)
-      {
-        if (match_map_0_1.count(m1[i]) == 0 || s1[match_map_0_1[m1[i]]] < s1[i])
-        {
-          match_map_0_1[m1[i]] = i;
-        }
-      }
-
-      for (const auto &[idx1, idx0] : match_map_1_0)
-      {
-        auto it = match_map_0_1.find(idx0);
-        if (it != match_map_0_1.end() && it->second == idx1)
-        {
-          const float score = 0.5f * (s0[idx0] + s1[idx1]);
-          if (score >= threshold)
-          {
-            matches.emplace_back(idx1, idx0);
-          }
-        }
-      }
-      return true;
+      kp1.push_back(query[i * 258]);
+      kp1.push_back(query[i * 258 + 1]);
+      desc1.insert(desc1.end(), query + i * 258 + 2, query + (i + 1) * 258);
     }
-    catch (const std::exception &e)
+
+    infer_env->set_input("kpts1", kp1, {1, nbQuery, 2});
+    infer_env->set_input("desc1", desc1, {1, nbQuery, 256});
+
+    std::vector<Ort::Value> res = infer_env->infer();
+
+    const Ort::Value &matches0 = res[infer_env->get_output_index("matches0")],
+                     &matches1 = res[infer_env->get_output_index("matches1")],
+                     &scores0 = res[infer_env->get_output_index("mscores0")],
+                     &scores1 = res[infer_env->get_output_index("mscores1")];
+
+    const size_t match_cnt_0 = matches0.GetTensorTypeAndShapeInfo().GetShape()[1],
+                 match_cnt_1 = matches1.GetTensorTypeAndShapeInfo().GetShape()[1];
+
+    const int64_t *m0 = matches0.GetTensorData<int64_t>(), *m1 = matches1.GetTensorData<int64_t>();
+    const float *s0 = scores0.GetTensorData<float>(), *s1 = scores1.GetTensorData<float>();
+    std::unordered_map<int64_t, int64_t> match_map_1_0, match_map_0_1;
+    for (size_t i = 0; i < match_cnt_0; ++i)
     {
-      OPENMVG_LOG_ERROR << "Error searching neighbors: " << e.what();
-      return false;
+      if (match_map_1_0.count(m0[i]) == 0 || s0[match_map_1_0[m0[i]]] < s0[i])
+      {
+        match_map_1_0[m0[i]] = i;
+      }
     }
+    for (size_t i = 0; i < match_cnt_1; ++i)
+    {
+      if (match_map_0_1.count(m1[i]) == 0 || s1[match_map_0_1[m1[i]]] < s1[i])
+      {
+        match_map_0_1[m1[i]] = i;
+      }
+    }
+
+    for (const auto &[idx1, idx0] : match_map_1_0)
+    {
+      auto it = match_map_0_1.find(idx0);
+      if (it != match_map_0_1.end() && it->second == idx1)
+      {
+        const float score = 0.5f * (s0[idx0] + s1[idx1]);
+        if (score >= threshold)
+        {
+          matches.emplace_back(idx1, idx0);
+        }
+      }
+    }
+    return true;
   };
 };
 
