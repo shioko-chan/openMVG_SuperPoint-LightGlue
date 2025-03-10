@@ -417,7 +417,7 @@ int main(int argc, char **argv)
   }
 
   //!!---------------------------------------
-  sNearestMatchingMethod = "LIGHTGLUE";
+  // sNearestMatchingMethod = "LIGHTGLUE";
   //!!---------------------------------------
   OPENMVG_LOG_INFO << " You called : "
                    << "\n"

@@ -464,7 +464,7 @@ int main(int argc, char **argv)
     NVInferEnv env(max_size, min_size, avg_size);
 
 #ifdef OPENMVG_USE_OPENMP
-    int thread_count = std::min(omp_get_max_threads(), 20);
+    int thread_count = std::min(omp_get_max_threads(), 5);
     omp_set_num_threads(thread_count);
     OPENMVG_LOG_INFO << "Using " << thread_count << " threads";
 #pragma omp parallel
