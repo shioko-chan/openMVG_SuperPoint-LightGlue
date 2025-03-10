@@ -1,0 +1,58 @@
+FROM nvidia/cuda:12.0.0-cudnn8-devel-ubuntu22.04 AS build
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+
+ENV http_proxy=${HTTP_PROXY}
+ENV https_proxy=${HTTPS_PROXY}
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates apt-transport-https software-properties-common \
+    build-essential gnupg pkg-config ninja-build \
+    wget curl zip unzip tar git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt
+RUN wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | gpg --dearmor - | tee /usr/share/keyrings/kitware-archive-keyring.gpg >/dev/null \
+    && echo 'deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ jammy main' | tee /etc/apt/sources.list.d/kitware.list >/dev/null \
+    && apt-get update && apt-get install -y cmake \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt
+RUN wget https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/10.8.0/local_repo/nv-tensorrt-local-repo-ubuntu2204-10.8.0-cuda-12.8_1.0-1_amd64.deb \
+    && dpkg -i nv-tensorrt-local-repo-ubuntu2204-10.8.0-cuda-12.8_1.0-1_amd64.deb \
+    && cp /var/nv-tensorrt-local-repo-ubuntu2204-10.8.0-cuda-12.8/*-keyring.gpg /usr/share/keyrings/ \
+    && apt-get update \
+    && apt-get install -y tensorrt \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm nv-tensorrt-local-repo-ubuntu2204-10.8.0-cuda-12.8_1.0-1_amd64.deb
+
+WORKDIR /opt
+RUN wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb \
+    && dpkg -i cuda-keyring_1.1-1_all.deb \
+    && apt-get update \
+    && apt-get install -y cudnn9-cuda-12 \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm cuda-keyring_1.1-1_all.deb
+
+WORKDIR /opt
+RUN git clone https://github.com/microsoft/vcpkg.git \
+    && cd vcpkg \
+    && ./bootstrap-vcpkg.sh 
+
+ENV VCPKG_INSTALLATION_ROOT=/opt/vcpkg
+
+WORKDIR /opt
+RUN git clone --recursive https://github.com/Microsoft/onnxruntime.git 
+
+WORKDIR /opt
+RUN cd onnxruntime \
+    && git checkout v1.21.0 \
+    && ./build.sh --config Release --build_shared_lib \
+    --use_cuda --cuda_version 12.0 --cuda_home /usr/local/cuda --cudnn_home /usr/lib/x86_64-linux-gnu \
+    --use_tensorrt --tensorrt_home /usr/lib/x86_64-linux-gnu \
+    --allow_running_as_root --compile_no_warning_as_error --skip_tests --use_vcpkg --skip_submodule_sync --parallel 4 \
+    --cmake_extra_defines CMAKE_OSX_ARCHITECTURES=x86_64 --cmake_extra_defines CMAKE_CXX_STANDARD=17 \
+    && rm -r /opt/onnxruntime/
