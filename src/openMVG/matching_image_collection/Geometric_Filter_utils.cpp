@@ -31,7 +31,6 @@ namespace openMVG
         Mat2X &x_J)
     {
       const size_t n = putativeMatches.size();
-      OPENMVG_LOG_INFO << "MatchesPointsToMat: " << n << " matches";
       x_I.resize(2, n);
       x_J.resize(2, n);
       using Scalar = typename Mat::Scalar; // Output matrix type
