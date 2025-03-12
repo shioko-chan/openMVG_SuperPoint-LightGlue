@@ -18,7 +18,7 @@ endmacro()
 
 if(NOT (${CMAKE_VERSION} VERSION_LESS "3.8.0"))
   # For CMake 3.8 and above, we can use meta features directly provided by CMake itself
-  set(CXX17_FEATURES cxx_std_11)
+  set(CXX11_FEATURES cxx_std_11)
   set(CXX14_FEATURES cxx_std_14)
   set(CXX17_FEATURES cxx_std_17)
   return()

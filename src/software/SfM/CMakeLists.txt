@@ -2,7 +2,6 @@
 # Intrinsic image analysis and SfM_Data container initialization
 ###
 find_package(OpenCV REQUIRED)
-find_package(CUDAToolkit REQUIRED)
 
 add_executable(openMVG_main_SfMInit_ImageListing main_SfMInit_ImageListing.cpp)
 target_link_libraries(openMVG_main_SfMInit_ImageListing
@@ -46,12 +45,11 @@ target_link_libraries(openMVG_main_ComputeFeatures
     openMVG_multiview
     openMVG_sfm
     openMVG_exif
-    nvinfer
-    nvonnxparser
-    CUDA::cudart
-    ${OpenCV_LIBS}
     ${STLPLUS_LIBRARY}
     vlsift
+    
+    ${OpenCV_LIBS}
+    onnxruntime
 )
 if (MSVC)
   set_target_properties(openMVG_main_ComputeFeatures PROPERTIES COMPILE_FLAGS "/bigobj")
@@ -126,13 +124,9 @@ target_link_libraries(openMVG_main_ComputeMatches
     openMVG_multiview
     openMVG_sfm
     openMVG_system
-    onnxruntime
-    CUDA::cudart
-    # cublas
-    cudnn
-    nvinfer
-    nvonnxparser
     ${STLPLUS_LIBRARY}
+
+    onnxruntime
 )
 
 add_executable(openMVG_main_GeometricFilter main_GeometricFilter.cpp)

@@ -8,14 +8,13 @@
 
 #include "openMVG/graph/graph.hpp"
 #include "openMVG/graph/graph_stats.hpp"
-#include "openMVG/matching/matching_interface.hpp"
-#include "openMVG/matching/regions_matcher.hpp"
 #include "openMVG/matching/indMatch.hpp"
 #include "openMVG/matching/indMatch_utils.hpp"
 #include "openMVG/matching/pairwiseAdjacencyDisplay.hpp"
 #include "openMVG/matching_image_collection/Cascade_Hashing_Matcher_Regions.hpp"
 #include "openMVG/matching_image_collection/Matcher_Regions.hpp"
 #include "openMVG/matching_image_collection/Pair_Builder.hpp"
+#include "openMVG/matching_image_collection/LightGlue_Matcher.hpp"
 #include "openMVG/sfm/pipelines/sfm_features_provider.hpp"
 #include "openMVG/sfm/pipelines/sfm_preemptive_regions_provider.hpp"
 #include "openMVG/sfm/pipelines/sfm_regions_provider.hpp"
@@ -32,260 +31,11 @@
 #include <iostream>
 #include <memory>
 #include <string>
-#include <unordered_map>
-#include <onnxruntime_cxx_api.h>
 
 using namespace openMVG;
 using namespace openMVG::matching;
 using namespace openMVG::sfm;
 using namespace openMVG::matching_image_collection;
-
-class InferEnv
-{
-private:
-  Ort::Env env;
-  std::unique_ptr<Ort::Session> session;
-  std::vector<Ort::Value> inputs;
-  Ort::MemoryInfo memory_info = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU);
-  std::vector<std::string> input_names, output_names;
-  std::vector<const char *> input_names_cstr, output_names_cstr;
-
-public:
-  InferEnv() = default;
-  InferEnv(const char *name, const char *model_path, const OrtLoggingLevel log_level = ORT_LOGGING_LEVEL_INFO)
-  {
-    env = Ort::Env(log_level, name);
-
-    Ort::SessionOptions session_options;
-
-    OrtCUDAProviderOptions provider_options;
-    provider_options.device_id = 0;
-
-    session_options.AppendExecutionProvider_CUDA(provider_options);
-
-    session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
-    session_options.SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);
-
-    session.reset(new Ort::Session(env, model_path, session_options));
-
-    Ort::AllocatorWithDefaultOptions allocator;
-    for (int i = 0; i < session->GetInputCount(); ++i)
-    {
-      input_names.emplace_back(session->GetInputNameAllocated(i, allocator).get());
-      inputs.push_back(Ort::Value(nullptr));
-    }
-    for (int i = 0; i < session->GetOutputCount(); ++i)
-    {
-      output_names.emplace_back(session->GetOutputNameAllocated(i, allocator).get());
-    }
-
-    std::transform(input_names.begin(), input_names.end(), std::back_inserter(input_names_cstr), [](std::string const &s)
-                   { return s.c_str(); });
-
-    std::transform(output_names.begin(), output_names.end(), std::back_inserter(output_names_cstr), [](std::string const &s)
-                   { return s.c_str(); });
-  }
-
-  template <typename T>
-  void set_input(std::string const &name, std::vector<T> &input, std::vector<int64_t> const &shape)
-  {
-    size_t idx = std::find(input_names.begin(), input_names.end(), name) - input_names.begin();
-    inputs[idx] = Ort::Value::CreateTensor<T>(memory_info, input.data(), input.size(), shape.data(), shape.size());
-  }
-
-  const std::vector<Ort::Value> infer()
-  {
-    return session->Run(Ort::RunOptions{nullptr}, input_names_cstr.data(), inputs.data(), input_names.size(), output_names_cstr.data(), output_names.size());
-  }
-
-  inline const std::vector<std::string> &get_input_names() const
-  {
-    return input_names;
-  }
-
-  inline const std::vector<std::string> &get_output_names() const
-  {
-    return output_names;
-  }
-
-  inline const size_t get_output_index(std::string const &name) const
-  {
-    return std::find(output_names.begin(), output_names.end(), name) - output_names.begin();
-  }
-};
-
-class RegionsMatcherLightGlue
-{
-private:
-  const features::Regions *regions;
-  InferEnv *infer_env;
-  std::vector<float> kp0, desc0;
-
-public:
-  RegionsMatcherLightGlue(const features::Regions &_regions, InferEnv *_infer_env) : regions(&_regions), infer_env(_infer_env)
-  {
-    if (regions->RegionCount() == 0)
-    {
-      return;
-    }
-    const float *dataset = static_cast<const float *>(regions->DescriptorRawData());
-    int nbRows = regions->RegionCount(), dimension = regions->DescriptorLength();
-    kp0.reserve(nbRows * 2);
-    desc0.reserve(nbRows * (dimension - 2));
-
-    for (int i = 0; i < nbRows; i++)
-    {
-      kp0.push_back(dataset[i * 258]);
-      kp0.push_back(dataset[i * 258 + 1]);
-      desc0.insert(desc0.end(), dataset + i * 258 + 2, dataset + (i + 1) * 258);
-    }
-    infer_env->set_input("kpts0", kp0, {1, nbRows, 2});
-    infer_env->set_input("desc0", desc0, {1, nbRows, 256});
-  }
-
-  bool Match(const float threshold, const features::Regions &query_regions, matching::IndMatches &matches)
-  {
-
-    if (!regions)
-    {
-      return false;
-    }
-    const float *query = reinterpret_cast<const float *>(query_regions.DescriptorRawData());
-    const int nbQuery = query_regions.RegionCount();
-    std::vector<float> kp1, desc1;
-    kp1.reserve(nbQuery * 2);
-    desc1.reserve(nbQuery * 256);
-
-    for (int i = 0; i < nbQuery; i++)
-    {
-      kp1.push_back(query[i * 258]);
-      kp1.push_back(query[i * 258 + 1]);
-      desc1.insert(desc1.end(), query + i * 258 + 2, query + (i + 1) * 258);
-    }
-
-    infer_env->set_input("kpts1", kp1, {1, nbQuery, 2});
-    infer_env->set_input("desc1", desc1, {1, nbQuery, 256});
-
-    std::vector<Ort::Value> res = infer_env->infer();
-
-    const Ort::Value &matches0 = res[infer_env->get_output_index("matches0")],
-                     &matches1 = res[infer_env->get_output_index("matches1")],
-                     &scores0 = res[infer_env->get_output_index("mscores0")],
-                     &scores1 = res[infer_env->get_output_index("mscores1")];
-
-    const size_t match_cnt_0 = matches0.GetTensorTypeAndShapeInfo().GetShape()[1],
-                 match_cnt_1 = matches1.GetTensorTypeAndShapeInfo().GetShape()[1];
-
-    const int64_t *m0 = matches0.GetTensorData<int64_t>(), *m1 = matches1.GetTensorData<int64_t>();
-    const float *s0 = scores0.GetTensorData<float>(), *s1 = scores1.GetTensorData<float>();
-    std::unordered_map<int64_t, int64_t> match_map_1_0, match_map_0_1;
-    for (size_t i = 0; i < match_cnt_0; ++i)
-    {
-      if (match_map_1_0.count(m0[i]) == 0 || s0[match_map_1_0[m0[i]]] < s0[i])
-      {
-        match_map_1_0[m0[i]] = i;
-      }
-    }
-    for (size_t i = 0; i < match_cnt_1; ++i)
-    {
-      if (match_map_0_1.count(m1[i]) == 0 || s1[match_map_0_1[m1[i]]] < s1[i])
-      {
-        match_map_0_1[m1[i]] = i;
-      }
-    }
-
-    for (const auto &[idx1, idx0] : match_map_1_0)
-    {
-      auto it = match_map_0_1.find(idx0);
-      if (it != match_map_0_1.end() && it->second == idx1)
-      {
-        const float score = 0.5f * (s0[idx0] + s1[idx1]);
-        if (score >= threshold)
-        {
-          matches.emplace_back(idx1, idx0);
-        }
-      }
-    }
-    return true;
-  };
-};
-
-class LightGlue_Matcher_Regions : public Matcher
-{
-private:
-  std::unique_ptr<InferEnv> infer_env;
-  float score_threshold;
-
-public:
-  LightGlue_Matcher_Regions(float threshold, const char *model_path = "/models/lightglue.onnx") : Matcher(), score_threshold(threshold)
-  {
-    infer_env.reset(new InferEnv("ONNX LightGlue", model_path));
-  }
-
-  void Match(
-      const std::shared_ptr<sfm::Regions_Provider> &regions_provider,
-      const Pair_Set &pairs,
-      PairWiseMatchesContainer &map_PutativeMatches,
-      system::ProgressInterface *my_progress_bar) const override
-  {
-    if (!my_progress_bar)
-      my_progress_bar = &system::ProgressInterface::dummy();
-
-    // #ifdef OPENMVG_USE_OPENMP
-    //     OPENMVG_LOG_INFO << "Using the OPENMP thread interface";
-    // #endif
-
-    my_progress_bar->Restart(pairs.size(), "- Matching -");
-
-    // Sort pairs according the first index to minimize the MatcherT build operations
-    using Map_vectorT = std::map<IndexT, std::vector<IndexT>>;
-    Map_vectorT map_Pairs;
-    for (const auto &pair_it : pairs)
-    {
-      map_Pairs[pair_it.first].push_back(pair_it.second);
-    }
-
-    // Perform matching between all the pairs
-    for (const auto &pairs_it : map_Pairs)
-    {
-      if (my_progress_bar->hasBeenCanceled())
-        continue;
-      const IndexT I = pairs_it.first;
-      const auto &indexToCompare = pairs_it.second;
-
-      const std::shared_ptr<features::Regions> regionsI = regions_provider->get(I);
-      if (regionsI->RegionCount() == 0)
-      {
-        (*my_progress_bar) += indexToCompare.size();
-        continue;
-      }
-
-      RegionsMatcherLightGlue matcher(*regionsI.get(), infer_env.get());
-
-      for (int j = 0; j < static_cast<int>(indexToCompare.size()); ++j)
-      {
-        const IndexT J = indexToCompare[j];
-
-        const std::shared_ptr<features::Regions> regionsJ = regions_provider->get(J);
-        if (regionsJ->RegionCount() == 0 || regionsI->Type_id() != regionsJ->Type_id())
-        {
-          ++(*my_progress_bar);
-          continue;
-        }
-
-        IndMatches vec_putative_matches;
-        matcher.Match(score_threshold, *regionsJ.get(), vec_putative_matches);
-
-        if (!vec_putative_matches.empty())
-        {
-          map_PutativeMatches.insert({{I, J}, std::move(vec_putative_matches)});
-        }
-
-        ++(*my_progress_bar);
-      }
-    }
-  }
-};
 
 /// Compute corresponding features between a series of views:
 /// - Load view images description (regions: features & descriptors)
@@ -359,9 +109,6 @@ int main(int argc, char **argv)
     return EXIT_FAILURE;
   }
 
-  //!!---------------------------------------
-  // sNearestMatchingMethod = "LIGHTGLUE";
-  //!!---------------------------------------
   OPENMVG_LOG_INFO << " You called : "
                    << "\n"
                    << argv[0] << "\n"
@@ -410,9 +157,6 @@ int main(int argc, char **argv)
   using namespace openMVG::features;
   const std::string sImage_describer = stlplus::create_filespec(sMatchesDirectory, "image_describer", "json");
   std::unique_ptr<Regions> regions_type = Init_region_type_from_file(sImage_describer);
-  //!!--------------------------------------------------------------
-  regions_type.reset(new features::SuperPoint_Regions());
-  //!!--------------------------------------------------------------
   if (!regions_type)
   {
     OPENMVG_LOG_ERROR << "Invalid: " << sImage_describer << " regions type file.";
@@ -537,10 +281,10 @@ int main(int argc, char **argv)
     }
     else if (sNearestMatchingMethod == "LIGHTGLUE")
     {
-      OPENMVG_LOG_INFO << "Using LIGTH_GLUE";
+      OPENMVG_LOG_INFO << "Using LIGHT_GLUE matcher";
       collectionMatcher.reset(new LightGlue_Matcher_Regions(fDistRatio));
     }
-    if (!collectionMatcher)
+    else if (!collectionMatcher)
     {
       OPENMVG_LOG_ERROR << "Invalid Nearest Neighbor method: " << sNearestMatchingMethod;
       return EXIT_FAILURE;

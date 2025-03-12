@@ -131,8 +131,8 @@ include(OptimizeForArchitecture)
 OptimizeForArchitecture()
 
 if (UNIX AND NOT OpenMVG_BUILD_COVERAGE)
-  set(CMAKE_C_FLAGS_RELEASE "-Ofast")
-  set(CMAKE_CXX_FLAGS_RELEASE "-Ofast")
+  set(CMAKE_C_FLAGS_RELEASE "-O3")
+  set(CMAKE_CXX_FLAGS_RELEASE "-O3")
 endif ()
 
 # ==============================================================================

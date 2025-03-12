@@ -19,7 +19,7 @@ usage: MvgMvs_Pipeline.py [-h] [--steps STEPS [STEPS ...]] [--preset PRESET]
 Photogrammetry reconstruction with these steps:
     0. Intrinsics analysis             openMVG_main_SfMInit_ImageListing
     1. Compute features                openMVG_main_ComputeFeatures
-    2. Compute pairs                   openMVG_main_PairGenerator
+    2. Compute pairs                   openMVG_main_ListMatchingPairs
     3. Compute matches                 openMVG_main_ComputeMatches
     4. Filter matches                  openMVG_main_GeometricFilter
     5. Incremental reconstruction      openMVG_main_SfM
@@ -212,16 +212,16 @@ class StepsStore:
         self.steps_data = [
             ["Intrinsics analysis",          # 0
              os.path.join(OPENMVG_BIN, "openMVG_main_SfMInit_ImageListing"),
-             ["-i", "%input_dir%", "-o", "%matches_dir%", "-d", "%camera_file_params%"]],
+             ["-i", "%input_dir%", "-o", "%matches_dir%", "-d", "%camera_file_params%", "-P"]],
             ["Compute features",             # 1
              os.path.join(OPENMVG_BIN, "openMVG_main_ComputeFeatures"),
-             ["-i", "%matches_dir%"+FOLDER_DELIM+"sfm_data.json", "-o", "%matches_dir%"]],
+             ["-i", "%matches_dir%"+FOLDER_DELIM+"sfm_data.json", "-o", "%matches_dir%", "-m", "SUPERPOINT", "-n", "4"]],
             ["Compute pairs",                # 2
-             os.path.join(OPENMVG_BIN, "openMVG_main_PairGenerator"),
-             ["-i", "%matches_dir%"+FOLDER_DELIM+"sfm_data.json", "-o", "%matches_dir%"+FOLDER_DELIM+"pairs.bin"]],
+             os.path.join(OPENMVG_BIN, "openMVG_main_ListMatchingPairs"),
+             ["-i", "%matches_dir%"+FOLDER_DELIM+"sfm_data.json", "-o", "%matches_dir%"+FOLDER_DELIM+"pairs.bin", "-n", "8", "G"]],
             ["Compute matches",              # 3
              os.path.join(OPENMVG_BIN, "openMVG_main_ComputeMatches"),
-             ["-i", "%matches_dir%"+FOLDER_DELIM+"sfm_data.json", "-p", "%matches_dir%"+FOLDER_DELIM+"pairs.bin", "-o", "%matches_dir%"+FOLDER_DELIM+"matches.putative.bin", "-n", "AUTO"]],
+             ["-i", "%matches_dir%"+FOLDER_DELIM+"sfm_data.json", "-p", "%matches_dir%"+FOLDER_DELIM+"pairs.bin", "-o", "%matches_dir%"+FOLDER_DELIM+"matches.putative.bin", "-n", "LIGHTGLUE"]],
             ["Filter matches",               # 4
              os.path.join(OPENMVG_BIN, "openMVG_main_GeometricFilter"),
              ["-i", "%matches_dir%"+FOLDER_DELIM+"sfm_data.json", "-m", "%matches_dir%"+FOLDER_DELIM+"matches.putative.bin", "-o", "%matches_dir%"+FOLDER_DELIM+"matches.f.bin"]],
