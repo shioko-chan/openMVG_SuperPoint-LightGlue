@@ -132,9 +132,8 @@ int main(int argc, char **argv)
       << "Optional parameters:" << "\n"
       << "--exhaustive_mode " << (cmd.used('E') ? "ON" : "OFF") << "\n"
       << "--video_mode " << (cmd.used('V') ? "ON" : "OFF") << "\n"
-      << "--gps_mode " << (cmd.used('G') ? "ON" : "OFF") << "\n";
-  if (cmd.used('V') || cmd.used('G'))
-    OPENMVG_LOG_INFO << "--neighbor_count " << i_neighbor_count;
+      << "--gps_mode " << (cmd.used('G') ? "ON" : "OFF") << "\n"
+      << (cmd.used('V') || cmd.used('G') ? "--neighbor_count " + std::to_string(i_neighbor_count) : "");
 
   //--
   // Check validity of the input parameters

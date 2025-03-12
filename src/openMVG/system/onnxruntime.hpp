@@ -17,7 +17,7 @@ namespace openMVG
 
     static Ort::Env &ort_env()
     {
-      static Ort::Env env(ORT_LOGGING_LEVEL_INFO, "ONNXRUNTIME");
+      static Ort::Env env(ORT_LOGGING_LEVEL_ERROR, "ONNXRUNTIME");
       return env;
     }
 
@@ -31,19 +31,16 @@ namespace openMVG
 
     public:
       InferEnv() = delete;
-      InferEnv(const char *name, const char *model_path, const OrtLoggingLevel log_level = ORT_LOGGING_LEVEL_INFO)
+      InferEnv(const char *name, const char *model_path, const OrtLoggingLevel log_level = ORT_LOGGING_LEVEL_ERROR)
       {
         Ort::SessionOptions session_options;
 
         OrtCUDAProviderOptions provider_options;
         provider_options.device_id = 0;
-        provider_options.gpu_mem_limit = 2UL << 30; // 2GB
-        provider_options.arena_extend_strategy = 1; // kSameAsRequested
-        provider_options.cudnn_conv_algo_search = OrtCudnnConvAlgoSearch::OrtCudnnConvAlgoSearchHeuristic;
+        provider_options.arena_extend_strategy = 0; // kNextPowerOfTwo
 
         session_options.AppendExecutionProvider_CUDA(provider_options);
-        session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
-        session_options.SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);
+        session_options.SetExecutionMode(ExecutionMode::ORT_PARALLEL);
         session_options.SetLogSeverityLevel(log_level);
         session_options.SetLogId(name);
 

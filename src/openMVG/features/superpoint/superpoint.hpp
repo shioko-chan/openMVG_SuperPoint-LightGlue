@@ -28,7 +28,7 @@ namespace openMVG
     class SuperPoint_Image_describer : public Image_describer
     {
     private:
-      std::unordered_map<int, ONNXRuntime::InferEnv> infer_env;
+      std::unique_ptr<ONNXRuntime::InferEnv> infer_env;
       size_t max_h = 768, max_w = 960;
 
     public:
@@ -46,21 +46,17 @@ namespace openMVG
 
       std::unique_ptr<Regions> Describe(const Image<unsigned char> &img_input, const Image<unsigned char> *mask = nullptr) override
       {
-        int id =
-#ifdef OPENMVG_USE_OPENMP
-            omp_get_thread_num();
-#else
-            0;
-#endif
-        if (infer_env.count(id) == 0)
+        if (!infer_env)
         {
-          infer_env.emplace(id, ONNXRuntime::InferEnv("ONNX SuperPoint", "/models/superpoint.onnx"));
+          infer_env = std::make_unique<ONNXRuntime::InferEnv>("ONNX SuperPoint", "/models/superpoint.onnx");
         }
-        ONNXRuntime::InferEnv &env = infer_env.at(id);
+
+        ONNXRuntime::InferEnv &env = *infer_env;
+
         cv::Mat cv_image, cv_image_resized, cv_image_float;
         cv::eigen2cv(img_input.GetMat(), cv_image);
 
-        int factor = 0;
+        int factor = 1;
         for (; factor < 1024; ++factor)
         {
           if (cv_image.cols / factor <= max_w && cv_image.rows / factor <= max_h)
@@ -87,6 +83,7 @@ namespace openMVG
             input_data.insert(input_data.end(), row_ptr, row_ptr + cv_image_float.cols * cv_image_float.channels());
           }
         }
+
         env.set_input("image", input_data, {1, 1, cv_image_float.rows, cv_image_float.cols});
 
         std::vector<Ort::Value> res = env.infer();

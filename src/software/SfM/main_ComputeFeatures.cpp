@@ -267,7 +267,7 @@ int main(int argc, char **argv)
       omp_set_num_threads(nb_max_thread);
     }
 
-#pragma omp parallel for schedule(dynamic) private(imageGray)
+#pragma omp parallel for schedule(dynamic) private(imageGray) if (sImage_Describer_Method != "SUPERPOINT")
 #endif
     for (int i = 0; i < static_cast<int>(sfm_data.views.size()); ++i)
     {

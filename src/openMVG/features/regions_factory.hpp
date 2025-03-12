@@ -16,20 +16,16 @@ namespace openMVG
 {
     namespace features
     {
-
         /// Define the classic SIFT Keypoint
         using SIFT_Regions = Scalar_Regions<SIOPointFeature, unsigned char, 128>;
-
         /// Define the AKAZE Keypoint (with a float descriptor)
         using AKAZE_Float_Regions = Scalar_Regions<SIOPointFeature, float, 64>;
         /// Define the AKAZE Keypoint (with a LIOP descriptor)
         using AKAZE_Liop_Regions = Scalar_Regions<SIOPointFeature, unsigned char, 144>;
         /// Define the AKAZE Keypoint (with a binary descriptor saved in an uchar array)
         using AKAZE_Binary_Regions = Binary_Regions<SIOPointFeature, 64>;
-
         /// Define the SuperPoint Keypoint
         using SuperPoint_Regions = Scalar_Regions<PointFeature, float, 258>;
-
     } // namespace features
 } // namespace openMVG
 

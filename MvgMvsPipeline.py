@@ -215,10 +215,10 @@ class StepsStore:
              ["-i", "%input_dir%", "-o", "%matches_dir%", "-d", "%camera_file_params%", "-P"]],
             ["Compute features",             # 1
              os.path.join(OPENMVG_BIN, "openMVG_main_ComputeFeatures"),
-             ["-i", "%matches_dir%"+FOLDER_DELIM+"sfm_data.json", "-o", "%matches_dir%", "-m", "SUPERPOINT", "-n", "4"]],
+             ["-i", "%matches_dir%"+FOLDER_DELIM+"sfm_data.json", "-o", "%matches_dir%", "-m", "SUPERPOINT"]],
             ["Compute pairs",                # 2
              os.path.join(OPENMVG_BIN, "openMVG_main_ListMatchingPairs"),
-             ["-i", "%matches_dir%"+FOLDER_DELIM+"sfm_data.json", "-o", "%matches_dir%"+FOLDER_DELIM+"pairs.bin", "-n", "8", "G"]],
+             ["-i", "%matches_dir%"+FOLDER_DELIM+"sfm_data.json", "-o", "%matches_dir%"+FOLDER_DELIM+"pairs.bin", "-n", "8", "-G"]],
             ["Compute matches",              # 3
              os.path.join(OPENMVG_BIN, "openMVG_main_ComputeMatches"),
              ["-i", "%matches_dir%"+FOLDER_DELIM+"sfm_data.json", "-p", "%matches_dir%"+FOLDER_DELIM+"pairs.bin", "-o", "%matches_dir%"+FOLDER_DELIM+"matches.putative.bin", "-n", "LIGHTGLUE"]],
