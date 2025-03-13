@@ -257,8 +257,9 @@ class StepsStore:
                     "-o",
                     "%matches_dir%" + FOLDER_DELIM + "pairs.bin",
                     "-n",
-                    "32",
+                    "12",
                     "-G",
+                    # "-V",
                 ],
             ],
             [
@@ -300,7 +301,8 @@ class StepsStore:
                     "-o",
                     "%reconstruction_dir%",
                     "-s",
-                    "INCREMENTAL",
+                    # "INCREMENTAL",
+                    "GLOBAL",
                 ],
             ],
             [
