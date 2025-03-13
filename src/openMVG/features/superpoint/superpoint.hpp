@@ -19,8 +19,8 @@
 
 namespace openMVG
 {
-  using namespace openMVG::features;
-  using namespace openMVG::image;
+  using namespace features;
+  using namespace image;
 
   namespace features
   {

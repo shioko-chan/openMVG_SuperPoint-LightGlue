@@ -1,5 +1,3 @@
-
-
 #ifndef OPENMVG_MATCHING_IMAGE_LIGHTGLUE_HPP
 #define OPENMVG_MATCHING_IMAGE_LIGHTGLUE_HPP
 
@@ -14,23 +12,27 @@
 #include "openMVG/matching_image_collection/Matcher.hpp"
 
 #include <vector>
+#include <unordered_set>
 #include <memory>
 #include <string>
 
 namespace openMVG
 {
   using namespace matching;
+  using namespace features;
+  using namespace ONNXRuntime;
   namespace matching_image_collection
   {
     class RegionsMatcherLightGlue
     {
     private:
-      const features::Regions *regions;
-      ONNXRuntime::InferEnv *infer_env;
-      std::vector<float> kp0, desc0;
+      const Regions *regions;
+      InferEnv *infer_env;
+      std::vector<float> kp0, desc0, kp1, desc1;
+      float threshold;
 
     public:
-      RegionsMatcherLightGlue(const features::Regions &_regions, ONNXRuntime::InferEnv *_infer_env) : regions(&_regions), infer_env(_infer_env)
+      RegionsMatcherLightGlue(const float threshold, const Regions &_regions, InferEnv *_infer_env) : threshold(threshold), regions(&_regions), infer_env(_infer_env)
       {
         if (regions->RegionCount() == 0)
         {
@@ -38,8 +40,14 @@ namespace openMVG
         }
         const float *dataset = static_cast<const float *>(regions->DescriptorRawData());
         int nbRows = regions->RegionCount(), dimension = regions->DescriptorLength();
+
+        if (dimension != 258)
+        {
+          throw std::runtime_error("LightGlue only supports 258-dimensional descriptors");
+        }
+
         kp0.reserve(nbRows * 2);
-        desc0.reserve(nbRows * (dimension - 2));
+        desc0.reserve(nbRows * 256);
 
         for (int i = 0; i < nbRows; i++)
         {
@@ -51,7 +59,15 @@ namespace openMVG
         infer_env->set_input("desc0", desc0, {1, nbRows, 256});
       }
 
-      bool Match(const float threshold, const features::Regions &query_regions, matching::IndMatches &matches)
+      /**
+       * Search the N nearest Neighbor of the scalar array query.
+       *
+       * \param[in]   query_regions     The query array.
+       * \param[out]  matches   The corresponding (query, neighbor) indices.
+       *
+       * \return True if success.
+       */
+      bool Match(const Regions &query_regions, IndMatches &matches)
       {
 
         if (!regions)
@@ -60,7 +76,10 @@ namespace openMVG
         }
         const float *query = reinterpret_cast<const float *>(query_regions.DescriptorRawData());
         const int nbQuery = query_regions.RegionCount();
-        std::vector<float> kp1, desc1;
+
+        kp1.resize(0);
+        desc1.resize(0);
+
         kp1.reserve(nbQuery * 2);
         desc1.reserve(nbQuery * 256);
 
@@ -70,7 +89,6 @@ namespace openMVG
           kp1.push_back(query[i * 258 + 1]);
           desc1.insert(desc1.end(), query + i * 258 + 2, query + (i + 1) * 258);
         }
-
         infer_env->set_input("kpts1", kp1, {1, nbQuery, 2});
         infer_env->set_input("desc1", desc1, {1, nbQuery, 256});
 
@@ -86,34 +104,25 @@ namespace openMVG
 
         const int64_t *m0 = matches0.GetTensorData<int64_t>(), *m1 = matches1.GetTensorData<int64_t>();
         const float *s0 = scores0.GetTensorData<float>(), *s1 = scores1.GetTensorData<float>();
-        std::unordered_map<int64_t, int64_t> match_map_1_0, match_map_0_1;
-        for (size_t i = 0; i < match_cnt_0; ++i)
-        {
-          if (match_map_1_0.count(m0[i]) == 0 || s0[match_map_1_0[m0[i]]] < s0[i])
-          {
-            match_map_1_0[m0[i]] = i;
-          }
-        }
-        for (size_t i = 0; i < match_cnt_1; ++i)
-        {
-          if (match_map_0_1.count(m1[i]) == 0 || s1[match_map_0_1[m1[i]]] < s1[i])
-          {
-            match_map_0_1[m1[i]] = i;
-          }
-        }
 
-        for (const auto &[idx1, idx0] : match_map_1_0)
+        std::unordered_set<std::pair<int64_t, int64_t>> matches_set;
+        for (int64_t i = 0; i < match_cnt_0; ++i)
         {
-          auto it = match_map_0_1.find(idx0);
-          if (it != match_map_0_1.end() && it->second == idx1)
+          if (m0[i] >= 0 && m1[m0[i]] == i && s0[i] >= threshold)
           {
-            const float score = 0.5f * (s0[idx0] + s1[idx1]);
-            if (score >= threshold)
-            {
-              matches.emplace_back(idx1, idx0);
-            }
+            matches_set.emplace(m0[i], i);
           }
         }
+        for (int64_t i = 0; i < match_cnt_1; ++i)
+        {
+          if (m1[i] >= 0 && m0[m1[i]] == i && s1[i] >= threshold)
+          {
+            matches_set.emplace(i, m1[i]);
+          }
+        }
+        std::transform(matches_set.begin(), matches_set.end(), std::back_inserter(matches), [](const std::pair<int64_t, int64_t> &p)
+                       { return IndMatch(p.first, p.second); });
+
         return true;
       };
     };
@@ -121,11 +130,11 @@ namespace openMVG
     class LightGlue_Matcher_Regions : public Matcher
     {
     private:
-      std::unique_ptr<ONNXRuntime::InferEnv> infer_env;
-      float score_threshold;
+      std::unique_ptr<InferEnv> infer_env;
+      float threshold;
 
     public:
-      LightGlue_Matcher_Regions(float threshold, const char *model_path = "/models/lightglue.onnx") : Matcher(), score_threshold(threshold)
+      LightGlue_Matcher_Regions(float threshold, const char *model_path = "/models/lightglue.onnx") : Matcher(), threshold(threshold)
       {
         infer_env.reset(new ONNXRuntime::InferEnv("ONNX LightGlue", model_path));
       }
@@ -137,12 +146,9 @@ namespace openMVG
           system::ProgressInterface *my_progress_bar = nullptr) const override
       {
         if (!my_progress_bar)
+        {
           my_progress_bar = &system::ProgressInterface::dummy();
-
-        // #ifdef OPENMVG_USE_OPENMP
-        //     OPENMVG_LOG_INFO << "Using the OPENMP thread interface";
-        // #endif
-
+        }
         my_progress_bar->Restart(pairs.size(), "- Matching -");
 
         // Sort pairs according the first index to minimize the MatcherT build operations
@@ -157,24 +163,26 @@ namespace openMVG
         for (const auto &pairs_it : map_Pairs)
         {
           if (my_progress_bar->hasBeenCanceled())
+          {
             continue;
+          }
           const IndexT I = pairs_it.first;
           const auto &indexToCompare = pairs_it.second;
 
-          const std::shared_ptr<features::Regions> regionsI = regions_provider->get(I);
+          const std::shared_ptr<Regions> regionsI = regions_provider->get(I);
           if (regionsI->RegionCount() == 0)
           {
             (*my_progress_bar) += indexToCompare.size();
             continue;
           }
 
-          RegionsMatcherLightGlue matcher(*regionsI.get(), infer_env.get());
+          RegionsMatcherLightGlue matcher(threshold, *regionsI.get(), infer_env.get());
 
           for (int j = 0; j < static_cast<int>(indexToCompare.size()); ++j)
           {
             const IndexT J = indexToCompare[j];
 
-            const std::shared_ptr<features::Regions> regionsJ = regions_provider->get(J);
+            const std::shared_ptr<Regions> regionsJ = regions_provider->get(J);
             if (regionsJ->RegionCount() == 0 || regionsI->Type_id() != regionsJ->Type_id())
             {
               ++(*my_progress_bar);
@@ -182,7 +190,7 @@ namespace openMVG
             }
 
             IndMatches vec_putative_matches;
-            matcher.Match(score_threshold, *regionsJ.get(), vec_putative_matches);
+            matcher.Match(*regionsJ.get(), vec_putative_matches);
 
             if (!vec_putative_matches.empty())
             {

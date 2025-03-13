@@ -259,7 +259,6 @@ class StepsStore:
                     "-n",
                     "12",
                     "-G",
-                    # "-V",
                 ],
             ],
             [
@@ -275,7 +274,7 @@ class StepsStore:
                     "-n",
                     "LIGHTGLUE",
                     "-r",
-                    "0.1",
+                    "0.5",
                 ],
             ],
             [
@@ -301,8 +300,8 @@ class StepsStore:
                     "-o",
                     "%reconstruction_dir%",
                     "-s",
-                    # "INCREMENTAL",
-                    "GLOBAL",
+                    "INCREMENTAL",
+                    # "GLOBAL",
                 ],
             ],
             [
