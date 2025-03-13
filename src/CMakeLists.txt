@@ -130,6 +130,9 @@ set(CMAKE_MODULE_PATH
 include(OptimizeForArchitecture)
 OptimizeForArchitecture()
 
+# Helper utility for overriding cached variables
+include(UpdateCacheVariable)
+
 if (UNIX AND NOT OpenMVG_BUILD_COVERAGE)
   set(CMAKE_C_FLAGS_RELEASE "-O3")
   set(CMAKE_CXX_FLAGS_RELEASE "-O3")
@@ -178,12 +181,9 @@ if (OpenMVG_USE_OPENMP)
       endif()
     endif()
     list(APPEND OPENMVG_LIBRARY_DEPENDENCIES OpenMP::OpenMP_CXX)
+  else (OPENMP_FOUND)
+      UPDATE_CACHE_VARIABLE(OpenMVG_USE_OPENMP OFF)
   endif (OPENMP_FOUND)
-else (OpenMVG_USE_OPENMP)
-    option(OpenMVG_USE_OPENMP "Use OpenMP for parallelization" OFF)
-    include(UpdateCacheVariable)
-    UPDATE_CACHE_VARIABLE(OpenMVG_USE_OPENMP OFF)
-    remove_definitions(-DOPENMVG_USE_OPENMP)
 endif (OpenMVG_USE_OPENMP)
 
 # ==============================================================================
@@ -332,6 +332,7 @@ if (NOT DEFINED COINUTILS_INCLUDE_DIR_HINTS)
   set(COINUTILS_LIBRARY lib_CoinUtils)
 else()
   find_package(CoinUtils QUIET)
+  list(APPEND CUSTOM_CMAKE_MODULES "${CMAKE_MODULE_PATH}/FindCoinUtils.cmake")
 endif()
 
 ## ==============================================================================
@@ -350,6 +351,7 @@ if (NOT DEFINED CLP_INCLUDE_DIR_HINTS)
   set(CLP_LIBRARIES lib_clp lib_OsiClpSolver)
 else()
   find_package(Clp QUIET)
+  list(APPEND CUSTOM_CMAKE_MODULES "${CMAKE_MODULE_PATH}/FindClp.cmake")
 endif()
 
 # ==============================================================================
@@ -366,6 +368,7 @@ if (NOT DEFINED OSI_INCLUDE_DIR_HINTS)
   set(OSI_LIBRARY lib_Osi)
 else()
   find_package(Osi QUIET)
+  list(APPEND CUSTOM_CMAKE_MODULES "${CMAKE_MODULE_PATH}/FindOsi.cmake")
 endif()
 
 # ==============================================================================
@@ -392,9 +395,12 @@ if (NOT DEFINED LEMON_INCLUDE_DIR_HINTS)
 endif()
 find_package(Lemon QUIET)
 if (NOT LEMON_FOUND OR OpenMVG_USE_INTERNAL_LEMON)
+  set(OpenMVG_USE_INTERNAL_LEMON ON)
   set(LEMON_INCLUDE_DIRS
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lemon
     ${PROJECT_BINARY_DIR}/third_party/lemon)
+else()
+  list(APPEND CUSTOM_CMAKE_MODULES "${CMAKE_MODULE_PATH}/FindLemon.cmake")
 endif()
 
 # ==============================================================================
@@ -616,6 +622,12 @@ configure_file("${CMAKE_SOURCE_DIR}/cmakeFindModules/OpenMVGConfig.cmake.in"
 
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/OpenMVGConfig.cmake"
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/openMVG/cmake)
+
+# Install custom CMake modules
+if(CUSTOM_CMAKE_MODULES)
+install(FILES ${CUSTOM_CMAKE_MODULES}
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/openMVG/cmake)
+endif()
 
 # ==============================================================================
 # UNINSTALL RULES
