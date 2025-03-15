@@ -123,13 +123,16 @@ def find(afile):
 
 # Try to find openMVG, COLMAP, and openMVS binaries in PATH
 OPENMVG_BIN = whereis("openMVG_main_SfMInit_ImageListing")
-# COLMAP_BIN = whereis("colmap")
+COLMAP_BIN = whereis("colmap")
 COLMAP_BIN = "FOO"
 OPENMVS_BIN = whereis("ReconstructMesh")
 
 # Try to find openMVG camera sensor database
-CAMERA_SENSOR_DB_FILE = "/opt/openMVG_SuperPoint-LightGlue/src/openMVG/exif/sensor_width_database/sensor_width_camera_database.txt"
-CAMERA_SENSOR_DB_DIRECTORY = find(CAMERA_SENSOR_DB_FILE)
+CAMERA_SENSOR_DB_FILE = "sensor_width_camera_database.txt"
+# CAMERA_SENSOR_DB_DIRECTORY = find(CAMERA_SENSOR_DB_FILE)
+CAMERA_SENSOR_DB_DIRECTORY = (
+    "/opt/openMVG_SuperPoint-LightGlue/src/openMVG/exif/sensor_width_database"
+)
 
 # Ask user for openMVG, COLMAP, and openMVS directories if not found
 if not OPENMVG_BIN:
@@ -274,7 +277,7 @@ class StepsStore:
                     "-n",
                     "LIGHTGLUE",
                     "-r",
-                    "0.5",
+                    "0.8",
                 ],
             ],
             [
@@ -301,7 +304,6 @@ class StepsStore:
                     "%reconstruction_dir%",
                     "-s",
                     "INCREMENTAL",
-                    # "GLOBAL",
                 ],
             ],
             [

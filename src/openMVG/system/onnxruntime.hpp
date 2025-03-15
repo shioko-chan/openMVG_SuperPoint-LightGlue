@@ -38,6 +38,8 @@ namespace openMVG
         OrtCUDAProviderOptions provider_options;
         provider_options.device_id = 0;
         provider_options.arena_extend_strategy = 0; // kNextPowerOfTwo
+        provider_options.do_copy_in_default_stream = 0;
+        // provider_options.cudnn_conv_algo_search = OrtCudnnConvAlgoSearchHeuristic;
 
         session_options.AppendExecutionProvider_CUDA(provider_options);
         session_options.SetExecutionMode(ExecutionMode::ORT_PARALLEL);

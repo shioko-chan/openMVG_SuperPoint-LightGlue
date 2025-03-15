@@ -110,14 +110,14 @@ namespace openMVG
         {
           if (m0[i] >= 0 && m1[m0[i]] == i && s0[i] >= threshold)
           {
-            matches_set.emplace(m0[i], i);
+            matches_set.emplace(i, m0[i]);
           }
         }
         for (int64_t i = 0; i < match_cnt_1; ++i)
         {
           if (m1[i] >= 0 && m0[m1[i]] == i && s1[i] >= threshold)
           {
-            matches_set.emplace(i, m1[i]);
+            matches_set.emplace(m1[i], i);
           }
         }
         std::transform(matches_set.begin(), matches_set.end(), std::back_inserter(matches), [](const std::pair<int64_t, int64_t> &p)
