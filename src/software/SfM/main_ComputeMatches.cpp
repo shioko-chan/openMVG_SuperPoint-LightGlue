@@ -316,8 +316,7 @@ int main(int argc, char **argv)
         for (const auto &pairwisematches_it : map_PutativeMatches)
         {
           const size_t putative_match_count = pairwisematches_it.second.size();
-          const int match_count_threshold =
-              preemptive_matching_percentage_threshold * ui_preemptive_feature_count;
+          const int match_count_threshold = preemptive_matching_percentage_threshold * ui_preemptive_feature_count;
           // TODO: Add an option to keeping X Best pairs
           if (putative_match_count >= match_count_threshold)
           {

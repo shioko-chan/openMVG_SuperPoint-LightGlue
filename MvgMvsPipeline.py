@@ -277,7 +277,9 @@ class StepsStore:
                     "-n",
                     "LIGHTGLUE",
                     "-r",
-                    "0.8",
+                    "0.4",
+                    # "-P",
+                    # "500",
                 ],
             ],
             [

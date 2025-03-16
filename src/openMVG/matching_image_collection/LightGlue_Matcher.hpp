@@ -15,6 +15,7 @@
 #include <unordered_set>
 #include <memory>
 #include <string>
+#include <sstream>
 
 namespace openMVG
 {
@@ -105,22 +106,22 @@ namespace openMVG
         const int64_t *m0 = matches0.GetTensorData<int64_t>(), *m1 = matches1.GetTensorData<int64_t>();
         const float *s0 = scores0.GetTensorData<float>(), *s1 = scores1.GetTensorData<float>();
 
-        std::unordered_set<std::pair<int64_t, int64_t>> matches_set;
-        for (int64_t i = 0; i < match_cnt_0; ++i)
+        std::set<std::pair<IndexT, IndexT>> matches_set;
+        for (IndexT i = 0; i < match_cnt_0; ++i)
         {
-          if (m0[i] >= 0 && m1[m0[i]] == i && s0[i] >= threshold)
+          if (m0[i] >= 0 && static_cast<IndexT>(m1[m0[i]]) == i && s0[i] >= threshold)
           {
-            matches_set.emplace(i, m0[i]);
+            matches_set.emplace(i, static_cast<IndexT>(m0[i]));
           }
         }
-        for (int64_t i = 0; i < match_cnt_1; ++i)
+        for (IndexT i = 0; i < match_cnt_1; ++i)
         {
-          if (m1[i] >= 0 && m0[m1[i]] == i && s1[i] >= threshold)
+          if (m1[i] >= 0 && static_cast<IndexT>(m0[m1[i]]) == i && s1[i] >= threshold)
           {
-            matches_set.emplace(m1[i], i);
+            matches_set.emplace(static_cast<IndexT>(m1[i]), i);
           }
         }
-        std::transform(matches_set.begin(), matches_set.end(), std::back_inserter(matches), [](const std::pair<int64_t, int64_t> &p)
+        std::transform(matches_set.begin(), matches_set.end(), std::back_inserter(matches), [](const std::pair<IndexT, IndexT> &p)
                        { return IndMatch(p.first, p.second); });
 
         return true;
@@ -178,10 +179,11 @@ namespace openMVG
 
           RegionsMatcherLightGlue matcher(threshold, *regionsI.get(), infer_env.get());
 
+          std::ostringstream res;
+          res << "Matching with " << I << "[";
           for (int j = 0; j < static_cast<int>(indexToCompare.size()); ++j)
           {
             const IndexT J = indexToCompare[j];
-
             const std::shared_ptr<Regions> regionsJ = regions_provider->get(J);
             if (regionsJ->RegionCount() == 0 || regionsI->Type_id() != regionsJ->Type_id())
             {
@@ -191,7 +193,7 @@ namespace openMVG
 
             IndMatches vec_putative_matches;
             matcher.Match(*regionsJ.get(), vec_putative_matches);
-
+            res << J << ":" << vec_putative_matches.size() << ", ";
             if (!vec_putative_matches.empty())
             {
               map_PutativeMatches.insert({{I, J}, std::move(vec_putative_matches)});
@@ -199,6 +201,8 @@ namespace openMVG
 
             ++(*my_progress_bar);
           }
+          res << "]";
+          OPENMVG_LOG_INFO << res.str();
         }
       }
     };

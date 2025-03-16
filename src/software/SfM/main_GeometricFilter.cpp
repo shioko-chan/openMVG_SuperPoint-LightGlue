@@ -48,11 +48,11 @@ using namespace openMVG::matching_image_collection;
 
 enum EGeometricModel
 {
-  FUNDAMENTAL_MATRIX       = 0,
-  ESSENTIAL_MATRIX         = 1,
-  HOMOGRAPHY_MATRIX        = 2,
+  FUNDAMENTAL_MATRIX = 0,
+  ESSENTIAL_MATRIX = 1,
+  HOMOGRAPHY_MATRIX = 2,
   ESSENTIAL_MATRIX_ANGULAR = 3,
-  ESSENTIAL_MATRIX_ORTHO   = 4,
+  ESSENTIAL_MATRIX_ORTHO = 4,
   ESSENTIAL_MATRIX_UPRIGHT = 5
 };
 
@@ -61,7 +61,7 @@ enum EGeometricModel
 /// - Compute putative local feature matches (descriptors matching)
 /// - Compute geometric coherent feature matches (robust model estimation from putative matches)
 /// - Export computed data
-int main( int argc, char** argv )
+int main(int argc, char **argv)
 {
   CmdLine cmd;
 
@@ -76,32 +76,32 @@ int main( int argc, char** argv )
   // The output pairs
   std::string sOutputPairsFilename;
 
-  std::string  sGeometricModel   = "f";
-  bool         bForce            = false;
-  bool         bGuided_matching  = false;
-  int          imax_iteration    = 2048;
+  std::string sGeometricModel = "f";
+  bool bForce = false;
+  bool bGuided_matching = false;
+  int imax_iteration = 2048;
   unsigned int ui_max_cache_size = 0;
 
-  //required
-  cmd.add( make_option( 'i', sSfM_Data_Filename, "input_file" ) );
-  cmd.add( make_option( 'o', sFilteredMatchesFilename, "output_file" ) );
-  cmd.add( make_option( 'm', sPutativeMatchesFilename, "matches" ) );
+  // required
+  cmd.add(make_option('i', sSfM_Data_Filename, "input_file"));
+  cmd.add(make_option('o', sFilteredMatchesFilename, "output_file"));
+  cmd.add(make_option('m', sPutativeMatchesFilename, "matches"));
   // Options
-  cmd.add( make_option( 'p', sInputPairsFilename, "input_pairs" ) );
-  cmd.add( make_option( 's', sOutputPairsFilename, "output_pairs" ) );
-  cmd.add( make_option( 'g', sGeometricModel, "geometric_model" ) );
-  cmd.add( make_option( 'f', bForce, "force" ) );
-  cmd.add( make_option( 'r', bGuided_matching, "guided_matching" ) );
-  cmd.add( make_option( 'I', imax_iteration, "max_iteration" ) );
-  cmd.add( make_option( 'c', ui_max_cache_size, "cache_size" ) );
+  cmd.add(make_option('p', sInputPairsFilename, "input_pairs"));
+  cmd.add(make_option('s', sOutputPairsFilename, "output_pairs"));
+  cmd.add(make_option('g', sGeometricModel, "geometric_model"));
+  cmd.add(make_option('f', bForce, "force"));
+  cmd.add(make_option('r', bGuided_matching, "guided_matching"));
+  cmd.add(make_option('I', imax_iteration, "max_iteration"));
+  cmd.add(make_option('c', ui_max_cache_size, "cache_size"));
 
   try
   {
-    if ( argc == 1 )
-      throw std::string( "Invalid command line parameter." );
-    cmd.process( argc, argv );
+    if (argc == 1)
+      throw std::string("Invalid command line parameter.");
+    cmd.process(argc, argv);
   }
-  catch ( const std::string& s )
+  catch (const std::string &s)
   {
     OPENMVG_LOG_INFO << "Usage: " << argv[0] << '\n'
                      << "[-i|--input_file]       A SfM_Data file\n"
@@ -143,48 +143,48 @@ int main( int argc, char** argv )
                    << "--guided_matching    " << bGuided_matching << "\n"
                    << "--cache_size         " << ((ui_max_cache_size == 0) ? "unlimited" : std::to_string(ui_max_cache_size));
 
-  if ( sFilteredMatchesFilename.empty() )
+  if (sFilteredMatchesFilename.empty())
   {
     OPENMVG_LOG_ERROR << "It is an invalid output file";
     return EXIT_FAILURE;
   }
-  if ( sSfM_Data_Filename.empty() )
+  if (sSfM_Data_Filename.empty())
   {
     OPENMVG_LOG_ERROR << "It is an invalid SfM file";
     return EXIT_FAILURE;
   }
-  if ( sPutativeMatchesFilename.empty() )
+  if (sPutativeMatchesFilename.empty())
   {
     OPENMVG_LOG_ERROR << "It is an invalid putative matche file";
     return EXIT_FAILURE;
   }
 
-  const std::string sMatchesDirectory = stlplus::folder_part( sPutativeMatchesFilename );
+  const std::string sMatchesDirectory = stlplus::folder_part(sPutativeMatchesFilename);
 
   EGeometricModel eGeometricModelToCompute = FUNDAMENTAL_MATRIX;
-  switch ( std::tolower(sGeometricModel[ 0 ], std::locale()) )
+  switch (std::tolower(sGeometricModel[0], std::locale()))
   {
-    case 'f':
-      eGeometricModelToCompute = FUNDAMENTAL_MATRIX;
-      break;
-    case 'e':
-      eGeometricModelToCompute = ESSENTIAL_MATRIX;
-      break;
-    case 'h':
-      eGeometricModelToCompute = HOMOGRAPHY_MATRIX;
-      break;
-    case 'a':
-      eGeometricModelToCompute = ESSENTIAL_MATRIX_ANGULAR;
-      break;
-    case 'u':
-      eGeometricModelToCompute = ESSENTIAL_MATRIX_UPRIGHT;
-      break;
-    case 'o':
-      eGeometricModelToCompute = ESSENTIAL_MATRIX_ORTHO;
-      break;
-    default:
-      OPENMVG_LOG_ERROR << "Unknown geometric model";
-      return EXIT_FAILURE;
+  case 'f':
+    eGeometricModelToCompute = FUNDAMENTAL_MATRIX;
+    break;
+  case 'e':
+    eGeometricModelToCompute = ESSENTIAL_MATRIX;
+    break;
+  case 'h':
+    eGeometricModelToCompute = HOMOGRAPHY_MATRIX;
+    break;
+  case 'a':
+    eGeometricModelToCompute = ESSENTIAL_MATRIX_ANGULAR;
+    break;
+  case 'u':
+    eGeometricModelToCompute = ESSENTIAL_MATRIX_UPRIGHT;
+    break;
+  case 'o':
+    eGeometricModelToCompute = ESSENTIAL_MATRIX_ORTHO;
+    break;
+  default:
+    OPENMVG_LOG_ERROR << "Unknown geometric model";
+    return EXIT_FAILURE;
   }
 
   // -----------------------------
@@ -199,7 +199,7 @@ int main( int argc, char** argv )
   // Read SfM Scene (image view & intrinsics data)
   //---------------------------------------
   SfM_Data sfm_data;
-  if ( !Load( sfm_data, sSfM_Data_Filename, ESfM_Data( VIEWS | INTRINSICS ) ) )
+  if (!Load(sfm_data, sSfM_Data_Filename, ESfM_Data(VIEWS | INTRINSICS)))
   {
     OPENMVG_LOG_ERROR << "The input SfM_Data file \"" << sSfM_Data_Filename << "\" cannot be read.";
     return EXIT_FAILURE;
@@ -211,9 +211,9 @@ int main( int argc, char** argv )
   // Init the regions_type from the image describer file (used for image regions extraction)
   using namespace openMVG::features;
   // Consider that the image_describer.json is inside the matches directory (which is bellow the sfm_data.bin)
-  const std::string        sImage_describer = stlplus::create_filespec( sMatchesDirectory, "image_describer.json" );
-  std::unique_ptr<Regions> regions_type     = Init_region_type_from_file( sImage_describer );
-  if ( !regions_type )
+  const std::string sImage_describer = stlplus::create_filespec(sMatchesDirectory, "image_describer.json");
+  std::unique_ptr<Regions> regions_type = Init_region_type_from_file(sImage_describer);
+  if (!regions_type)
   {
     OPENMVG_LOG_ERROR << "Invalid: " << sImage_describer << " regions type file.";
     return EXIT_FAILURE;
@@ -227,7 +227,7 @@ int main( int argc, char** argv )
 
   // Load the corresponding view regions
   std::shared_ptr<Regions_Provider> regions_provider;
-  if ( ui_max_cache_size == 0 )
+  if (ui_max_cache_size == 0)
   {
     // Default regions provider (load & store all regions in memory)
     regions_provider = std::make_shared<Regions_Provider>();
@@ -235,13 +235,13 @@ int main( int argc, char** argv )
   else
   {
     // Cached regions provider (load & store regions on demand)
-    regions_provider = std::make_shared<Regions_Provider_Cache>( ui_max_cache_size );
+    regions_provider = std::make_shared<Regions_Provider_Cache>(ui_max_cache_size);
   }
 
   // Show the progress on the command line:
   system::LoggerProgress progress;
 
-  if ( !regions_provider->load( sfm_data, sMatchesDirectory, regions_type, &progress ) )
+  if (!regions_provider->load(sfm_data, sMatchesDirectory, regions_type, &progress))
   {
     OPENMVG_LOG_ERROR << "Invalid regions.";
     return EXIT_FAILURE;
@@ -251,22 +251,22 @@ int main( int argc, char** argv )
   //---------------------------------------
   // A. Load initial matches
   //---------------------------------------
-  if ( !Load( map_PutativeMatches, sPutativeMatchesFilename ) )
+  if (!Load(map_PutativeMatches, sPutativeMatchesFilename))
   {
     OPENMVG_LOG_ERROR << "Failed to load the initial matches file.";
     return EXIT_FAILURE;
   }
 
-  if ( !sInputPairsFilename.empty() )
+  if (!sInputPairsFilename.empty())
   {
     // Load input pairs
     OPENMVG_LOG_INFO << "Loading input pairs ...";
     Pair_Set input_pairs;
-    loadPairs( sfm_data.GetViews().size(), sInputPairsFilename, input_pairs );
+    loadPairs(sfm_data.GetViews().size(), sInputPairsFilename, input_pairs);
 
     // Filter matches with the given pairs
     OPENMVG_LOG_INFO << "Filtering matches with the given pairs.";
-    map_PutativeMatches = getPairs( map_PutativeMatches, input_pairs );
+    map_PutativeMatches = getPairs(map_PutativeMatches, input_pairs);
   }
 
   //---------------------------------------
@@ -276,102 +276,102 @@ int main( int argc, char** argv )
   //---------------------------------------
 
   std::unique_ptr<ImageCollectionGeometricFilter> filter_ptr(
-      new ImageCollectionGeometricFilter( &sfm_data, regions_provider ) );
+      new ImageCollectionGeometricFilter(&sfm_data, regions_provider));
 
-  if ( filter_ptr )
+  if (filter_ptr)
   {
     system::Timer timer;
-    const double  d_distance_ratio = 0.6;
+    const double d_distance_ratio = 0.6;
 
     PairWiseMatches map_GeometricMatches;
-    switch ( eGeometricModelToCompute )
+    switch (eGeometricModelToCompute)
     {
-      case HOMOGRAPHY_MATRIX:
-      {
-        const bool bGeometric_only_guided_matching = true;
-        filter_ptr->Robust_model_estimation(
-            GeometricFilter_HMatrix_AC( 4.0, imax_iteration ),
-            map_PutativeMatches,
-            bGuided_matching,
-            bGeometric_only_guided_matching ? -1.0 : d_distance_ratio,
-            &progress );
-        map_GeometricMatches = filter_ptr->Get_geometric_matches();
-      }
-      break;
-      case FUNDAMENTAL_MATRIX:
-      {
-        filter_ptr->Robust_model_estimation(
-            GeometricFilter_FMatrix_AC( 4.0, imax_iteration ),
-            map_PutativeMatches,
-            bGuided_matching,
-            d_distance_ratio,
-            &progress );
-        map_GeometricMatches = filter_ptr->Get_geometric_matches();
-      }
-      break;
-      case ESSENTIAL_MATRIX:
-      {
-        filter_ptr->Robust_model_estimation(
-            GeometricFilter_EMatrix_AC( 4.0, imax_iteration ),
-            map_PutativeMatches,
-            bGuided_matching,
-            d_distance_ratio,
-            &progress );
-        map_GeometricMatches = filter_ptr->Get_geometric_matches();
+    case HOMOGRAPHY_MATRIX:
+    {
+      const bool bGeometric_only_guided_matching = true;
+      filter_ptr->Robust_model_estimation(
+          GeometricFilter_HMatrix_AC(4.0, imax_iteration),
+          map_PutativeMatches,
+          bGuided_matching,
+          bGeometric_only_guided_matching ? -1.0 : d_distance_ratio,
+          &progress);
+      map_GeometricMatches = filter_ptr->Get_geometric_matches();
+    }
+    break;
+    case FUNDAMENTAL_MATRIX:
+    {
+      filter_ptr->Robust_model_estimation(
+          GeometricFilter_FMatrix_AC(4.0, imax_iteration),
+          map_PutativeMatches,
+          bGuided_matching,
+          d_distance_ratio,
+          &progress);
+      map_GeometricMatches = filter_ptr->Get_geometric_matches();
+    }
+    break;
+    case ESSENTIAL_MATRIX:
+    {
+      filter_ptr->Robust_model_estimation(
+          GeometricFilter_EMatrix_AC(4.0, imax_iteration),
+          map_PutativeMatches,
+          bGuided_matching,
+          d_distance_ratio,
+          &progress);
+      map_GeometricMatches = filter_ptr->Get_geometric_matches();
 
-        //-- Perform an additional check to remove pairs with poor overlap
-        std::vector<PairWiseMatches::key_type> vec_toRemove;
-        for ( const auto& pairwisematches_it : map_GeometricMatches )
+      //-- Perform an additional check to remove pairs with poor overlap
+      std::vector<PairWiseMatches::key_type> vec_toRemove;
+      for (const auto &pairwisematches_it : map_GeometricMatches)
+      {
+        const size_t putativePhotometricCount = map_PutativeMatches.find(pairwisematches_it.first)->second.size();
+        const size_t putativeGeometricCount = pairwisematches_it.second.size();
+        const float ratio = putativeGeometricCount / static_cast<float>(putativePhotometricCount);
+        if (putativeGeometricCount < 50 || ratio < .3f)
         {
-          const size_t putativePhotometricCount = map_PutativeMatches.find( pairwisematches_it.first )->second.size();
-          const size_t putativeGeometricCount   = pairwisematches_it.second.size();
-          const float  ratio                    = putativeGeometricCount / static_cast<float>( putativePhotometricCount );
-          if ( putativeGeometricCount < 50 || ratio < .3f )
-          {
-            // the pair will be removed
-            vec_toRemove.push_back( pairwisematches_it.first );
-          }
-        }
-        //-- remove discarded pairs
-        for ( const auto& pair_to_remove_it : vec_toRemove )
-        {
-          map_GeometricMatches.erase( pair_to_remove_it );
+          // the pair will be removed
+          vec_toRemove.push_back(pairwisematches_it.first);
         }
       }
-      break;
-      case ESSENTIAL_MATRIX_ANGULAR:
+      //-- remove discarded pairs
+      for (const auto &pair_to_remove_it : vec_toRemove)
       {
-        filter_ptr->Robust_model_estimation(
+        map_GeometricMatches.erase(pair_to_remove_it);
+      }
+    }
+    break;
+    case ESSENTIAL_MATRIX_ANGULAR:
+    {
+      filter_ptr->Robust_model_estimation(
           GeometricFilter_ESphericalMatrix_AC_Angular<false>(4.0, imax_iteration),
           map_PutativeMatches, bGuided_matching, d_distance_ratio, &progress);
-        map_GeometricMatches = filter_ptr->Get_geometric_matches();
-      }
-      break;
-      case ESSENTIAL_MATRIX_UPRIGHT:
-      {
-        filter_ptr->Robust_model_estimation(
+      map_GeometricMatches = filter_ptr->Get_geometric_matches();
+    }
+    break;
+    case ESSENTIAL_MATRIX_UPRIGHT:
+    {
+      filter_ptr->Robust_model_estimation(
           GeometricFilter_ESphericalMatrix_AC_Angular<true>(4.0, imax_iteration),
           map_PutativeMatches, bGuided_matching, d_distance_ratio, &progress);
-        map_GeometricMatches = filter_ptr->Get_geometric_matches();
-      }
-      break;
-      case ESSENTIAL_MATRIX_ORTHO:
-      {
-        filter_ptr->Robust_model_estimation(
-            GeometricFilter_EOMatrix_RA( 2.0, imax_iteration ),
-            map_PutativeMatches,
-            bGuided_matching,
-            d_distance_ratio,
-            &progress );
-        map_GeometricMatches = filter_ptr->Get_geometric_matches();
-      }
-      break;
+      map_GeometricMatches = filter_ptr->Get_geometric_matches();
+    }
+    break;
+    case ESSENTIAL_MATRIX_ORTHO:
+    {
+      filter_ptr->Robust_model_estimation(
+          GeometricFilter_EOMatrix_RA(2.0, imax_iteration),
+          map_PutativeMatches,
+          bGuided_matching,
+          d_distance_ratio,
+          &progress);
+      map_GeometricMatches = filter_ptr->Get_geometric_matches();
+    }
+    break;
     }
 
     //---------------------------------------
     //-- Export geometric filtered matches
     //---------------------------------------
-    if ( !Save( map_GeometricMatches, sFilteredMatchesFilename ) )
+    if (!Save(map_GeometricMatches, sFilteredMatchesFilename))
     {
       OPENMVG_LOG_ERROR << "Cannot save filtered matches in: " << sFilteredMatchesFilename;
       return EXIT_FAILURE;
@@ -383,29 +383,29 @@ int main( int argc, char** argv )
     OPENMVG_LOG_INFO << "Task done in (s): " << timer.elapsed();
 
     //-- export Adjacency matrix
-    OPENMVG_LOG_INFO <<  "\n Export Adjacency Matrix of the pairwise's geometric matches";
+    OPENMVG_LOG_INFO << "\n Export Adjacency Matrix of the pairwise's geometric matches";
 
-    PairWiseMatchingToAdjacencyMatrixSVG( sfm_data.GetViews().size(),
-                                          map_GeometricMatches,
-                                          stlplus::create_filespec( sMatchesDirectory, "GeometricAdjacencyMatrix", "svg" ) );
+    PairWiseMatchingToAdjacencyMatrixSVG(sfm_data.GetViews().size(),
+                                         map_GeometricMatches,
+                                         stlplus::create_filespec(sMatchesDirectory, "GeometricAdjacencyMatrix", "svg"));
 
-    const Pair_Set outputPairs = getPairs( map_GeometricMatches );
+    const Pair_Set outputPairs = getPairs(map_GeometricMatches);
 
     //-- export view pair graph once geometric filter have been done
     {
       std::set<IndexT> set_ViewIds;
-      std::transform( sfm_data.GetViews().begin(), sfm_data.GetViews().end(), std::inserter( set_ViewIds, set_ViewIds.begin() ), stl::RetrieveKey() );
-      graph::indexedGraph putativeGraph( set_ViewIds, outputPairs );
+      std::transform(sfm_data.GetViews().begin(), sfm_data.GetViews().end(), std::inserter(set_ViewIds, set_ViewIds.begin()), stl::RetrieveKey());
+      graph::indexedGraph putativeGraph(set_ViewIds, outputPairs);
       graph::exportToGraphvizData(
-          stlplus::create_filespec( sMatchesDirectory, "geometric_matches" ),
-          putativeGraph );
+          stlplus::create_filespec(sMatchesDirectory, "geometric_matches"),
+          putativeGraph);
     }
 
     // Write pairs
-    if ( !sOutputPairsFilename.empty() )
+    if (!sOutputPairsFilename.empty())
     {
       OPENMVG_LOG_INFO << "Saving pairs to: " << sOutputPairsFilename;
-      if ( !savePairs( sOutputPairsFilename, outputPairs ) )
+      if (!savePairs(sOutputPairsFilename, outputPairs))
       {
         OPENMVG_LOG_ERROR << "Failed to write pairs file";
         return EXIT_FAILURE;

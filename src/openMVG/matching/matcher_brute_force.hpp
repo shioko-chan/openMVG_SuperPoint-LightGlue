@@ -147,7 +147,7 @@ namespace openMVG
       /**
        * Search the N nearest Neighbor for a section of index of the scalar array query.
        *
-       * \param[in]   query     The query array [query_start_index, query_stop_index[.
+       * \param[in]   query     The query array [query_start_index, query_stop_index].
        * \param[in]   query_start_index  Start of range of index to handle.
        * \param[in]   query_stop_index  End of range to index to handle.
        * \param[out]  indices   The corresponding (query, neighbor) indices (updated for the range).
