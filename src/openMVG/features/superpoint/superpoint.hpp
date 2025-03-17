@@ -12,6 +12,7 @@
 #include "opencv2/core/eigen.hpp"
 
 #include <unordered_map>
+#include <cmath>
 
 #ifdef OPENMVG_USE_OPENMP
 #include <omp.h>
@@ -29,14 +30,15 @@ namespace openMVG
     {
     private:
       std::unique_ptr<ONNXRuntime::InferEnv> infer_env;
-      size_t max_h = 768, max_w = 960;
+      float max_h = 768.0f, max_w = 960.0f;
+      float threshold = 0.2;
 
     public:
       template <class Archive>
       void serialize(Archive &ar);
 
       SuperPoint_Image_describer() = default;
-      SuperPoint_Image_describer(size_t max_h, size_t max_w) : Image_describer(), max_h(max_h), max_w(max_w) {}
+      explicit SuperPoint_Image_describer(float threshold, float max_h = 768.0f, float max_w = 960.0f) : Image_describer(), threshold(threshold), max_h(max_h), max_w(max_w) {}
 
       bool Set_configuration_preset(EDESCRIBER_PRESET preset) override
       {
@@ -44,8 +46,11 @@ namespace openMVG
         return false;
       }
 
-      std::unique_ptr<Regions> Describe(const Image<unsigned char> &img_input, const Image<unsigned char> *mask = nullptr) override
+      std::unique_ptr<Regions>
+      Describe(const Image<unsigned char> &img_input,
+               const Image<unsigned char> *mask = nullptr) override
       {
+
         if (!infer_env)
         {
           infer_env = std::make_unique<ONNXRuntime::InferEnv>("ONNX SuperPoint", "/models/superpoint.onnx");
@@ -56,16 +61,18 @@ namespace openMVG
         cv::Mat cv_image, cv_image_resized, cv_image_float;
         cv::eigen2cv(img_input.GetMat(), cv_image);
 
+        const float width = static_cast<float>(cv_image.cols), height = static_cast<float>(cv_image.rows);
+
         int factor = 1;
         for (; factor < 1024; ++factor)
         {
-          if (cv_image.cols / factor <= max_w && cv_image.rows / factor <= max_h)
+          if (width / factor <= max_w && height / factor <= max_h)
           {
             break;
           }
         }
 
-        cv::resize(cv_image, cv_image_resized, cv::Size(cv_image.cols / factor, cv_image.rows / factor), 0, 0, cv::INTER_AREA);
+        cv::resize(cv_image, cv_image_resized, cv::Size(static_cast<int>(width / factor), static_cast<int>(height / factor)), 0, 0, cv::INTER_AREA);
 
         cv_image_resized.convertTo(cv_image_float, CV_32FC1, 1.0 / 255.0);
 
@@ -104,17 +111,20 @@ namespace openMVG
         regions->Features().reserve(num_keypoints);
         regions->Descriptors().reserve(num_keypoints);
 
-        const float width = 1.0f * factor * cv_image_float.cols, height = 1.0f * factor * cv_image_float.rows;
+        const float *score_data = score.GetTensorData<float>(), *desc_data = desc.GetTensorData<float>();
+        const int64_t *kp_data = kp.GetTensorData<int64_t>();
 
         for (int i = 0; i < num_keypoints; ++i)
         {
-          const int64_t *kp_data = kp.GetTensorData<int64_t>();
+          if (score_data[i] < threshold)
+          {
+            continue;
+          }
           const float x = static_cast<float>(kp_data[i * 2] * factor);
           const float y = static_cast<float>(kp_data[i * 2 + 1] * factor);
           regions->Features().emplace_back(x, y);
 
-          const float *desc_start = desc.GetTensorData<float>() + i * 256;
-
+          const float *desc_start = desc_data + i * 256;
           openMVG::features::SuperPoint_Regions::DescriptorT descriptor;
           descriptor.data()[0] = (x - width / 2) / (width / 2);
           descriptor.data()[1] = (y - height / 2) / (height / 2);

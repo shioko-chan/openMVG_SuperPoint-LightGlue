@@ -100,13 +100,13 @@ namespace openMVG
                          &scores0 = res[infer_env->get_output_index("mscores0")],
                          &scores1 = res[infer_env->get_output_index("mscores1")];
 
-        const size_t match_cnt_0 = matches0.GetTensorTypeAndShapeInfo().GetShape()[1],
+        const IndexT match_cnt_0 = matches0.GetTensorTypeAndShapeInfo().GetShape()[1],
                      match_cnt_1 = matches1.GetTensorTypeAndShapeInfo().GetShape()[1];
 
         const int64_t *m0 = matches0.GetTensorData<int64_t>(), *m1 = matches1.GetTensorData<int64_t>();
         const float *s0 = scores0.GetTensorData<float>(), *s1 = scores1.GetTensorData<float>();
 
-        std::set<std::pair<IndexT, IndexT>> matches_set;
+        std::set<IndMatch> matches_set;
         for (IndexT i = 0; i < match_cnt_0; ++i)
         {
           if (m0[i] >= 0 && static_cast<IndexT>(m1[m0[i]]) == i && s0[i] >= threshold)
@@ -121,9 +121,7 @@ namespace openMVG
             matches_set.emplace(static_cast<IndexT>(m1[i]), i);
           }
         }
-        std::transform(matches_set.begin(), matches_set.end(), std::back_inserter(matches), [](const std::pair<IndexT, IndexT> &p)
-                       { return IndMatch(p.first, p.second); });
-
+        matches.assign(matches_set.begin(), matches_set.end());
         return true;
       };
     };

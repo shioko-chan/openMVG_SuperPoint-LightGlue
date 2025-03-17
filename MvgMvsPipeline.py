@@ -249,6 +249,8 @@ class StepsStore:
                     "%matches_dir%",
                     "-m",
                     "SUPERPOINT",
+                    "-t",
+                    "0.2",
                 ],
             ],
             [
@@ -260,7 +262,7 @@ class StepsStore:
                     "-o",
                     "%matches_dir%" + FOLDER_DELIM + "pairs.bin",
                     "-n",
-                    "12",
+                    "32",
                     "-G",
                 ],
             ],

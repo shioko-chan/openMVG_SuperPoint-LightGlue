@@ -61,7 +61,7 @@ features::EDESCRIBER_PRESET stringToEnum(const std::string &sPreset)
 int main(int argc, char **argv)
 {
   CmdLine cmd;
-
+  float threshold = 0.2f;
   std::string sSfM_Data_Filename;
   std::string sOutDir = "";
   bool bUpRight = false;
@@ -76,6 +76,7 @@ int main(int argc, char **argv)
   cmd.add(make_option('i', sSfM_Data_Filename, "input_file"));
   cmd.add(make_option('o', sOutDir, "outdir"));
   // Optional
+  cmd.add(make_option('t', threshold, "threshold"));
   cmd.add(make_option('m', sImage_Describer_Method, "describerMethod"));
   cmd.add(make_option('u', bUpRight, "upright"));
   cmd.add(make_option('f', bForce, "force"));
@@ -129,6 +130,7 @@ int main(int argc, char **argv)
       << "--upright " << bUpRight << "\n"
       << "--describerPreset " << (sFeaturePreset.empty() ? "NORMAL" : sFeaturePreset) << "\n"
       << "--force " << bForce << "\n"
+      << "--threshold " << threshold << "\n"
 #ifdef OPENMVG_USE_OPENMP
       << "--numThreads " << iNumThreads << "\n"
 #endif
@@ -211,7 +213,7 @@ int main(int argc, char **argv)
     }
     else if (sImage_Describer_Method == "SUPERPOINT")
     {
-      image_describer.reset(new SuperPoint_Image_describer(768, 960));
+      image_describer.reset(new SuperPoint_Image_describer(threshold));
     }
     if (!image_describer)
     {

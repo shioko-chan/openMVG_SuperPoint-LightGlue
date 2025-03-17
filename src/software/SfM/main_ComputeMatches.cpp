@@ -303,7 +303,9 @@ int main(int argc, char **argv)
       else if (!loadPairs(sfm_data.GetViews().size(), sPredefinedPairList, pairs))
       {
         OPENMVG_LOG_ERROR << "Failed to load pairs from file: \"" << sPredefinedPairList << "\"";
-        return EXIT_FAILURE;
+        OPENMVG_LOG_INFO << "No input pair file will be set. Use exhaustive match as alternative.";
+        const size_t NImage = sfm_data.GetViews().size();
+        pairs = exhaustivePairs(NImage);
       }
       OPENMVG_LOG_INFO << "Running matching on #pairs: " << pairs.size();
       // Photometric matching of putative pairs
