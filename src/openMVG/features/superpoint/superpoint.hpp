@@ -30,7 +30,7 @@ namespace openMVG
     {
     private:
       std::unique_ptr<ONNXRuntime::InferEnv> infer_env;
-      float max_h = 768.0f, max_w = 960.0f;
+      float max_h, max_w;
       float threshold = 0.2;
 
     public:
@@ -38,7 +38,7 @@ namespace openMVG
       void serialize(Archive &ar);
 
       SuperPoint_Image_describer() = default;
-      explicit SuperPoint_Image_describer(float threshold, float max_h = 768.0f, float max_w = 960.0f) : Image_describer(), threshold(threshold), max_h(max_h), max_w(max_w) {}
+      explicit SuperPoint_Image_describer(float threshold, float max_h = 1080.0f, float max_w = 1920.0f) : Image_describer(), threshold(threshold), max_h(max_h), max_w(max_w) {}
 
       bool Set_configuration_preset(EDESCRIBER_PRESET preset) override
       {
@@ -62,17 +62,10 @@ namespace openMVG
         cv::eigen2cv(img_input.GetMat(), cv_image);
 
         const float width = static_cast<float>(cv_image.cols), height = static_cast<float>(cv_image.rows);
+        const float factor = std::max(1.0f, std::max(width / max_w, height / max_h));
 
-        int factor = 1;
-        for (; factor < 1024; ++factor)
-        {
-          if (width / factor <= max_w && height / factor <= max_h)
-          {
-            break;
-          }
-        }
-
-        cv::resize(cv_image, cv_image_resized, cv::Size(static_cast<int>(width / factor), static_cast<int>(height / factor)), 0, 0, cv::INTER_AREA);
+        OPENMVG_LOG_INFO << "before:[" << cv_image.cols << ", " << cv_image.rows << "]; factor:" << factor << "; after:[" << static_cast<int>(std::round(width / factor)) << "," << static_cast<int>(std::round(height / factor)) << "]";
+        cv::resize(cv_image, cv_image_resized, cv::Size(static_cast<int>(std::round(width / factor)), static_cast<int>(std::round(height / factor))), 0, 0, cv::INTER_AREA);
 
         cv_image_resized.convertTo(cv_image_float, CV_32FC1, 1.0 / 255.0);
 
